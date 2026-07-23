@@ -346,9 +346,7 @@ def comp_cls(v,base):
         if v>base*1.03: return "f-pricier"
         return "f-similar"
     except: return ""
-CHART=dict(plot_bgcolor="#fff",paper_bgcolor="#fff",
-           font_color="#2a4060",font_family="DM Sans",
-           margin=dict(l=8,r=8,t=8,b=8))
+CHART=dict(plot_bgcolor="#fff",paper_bgcolor="#fff",margin=dict(l=8,r=8,t=8,b=8),font=dict(color="#2a4060",family="DM Sans"))
 
 
 # ── MAIN ─────────────────────────────────────────────────────
