@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, date
 # ============================================================
 # !! FILL THESE IN !!
 # ============================================================
-GOOGLE_SHEET_NAME = "Price Intelligence"
+GOOGLE_SHEET_NAME = "Pricing Intelligence"
 GEMINI_API_KEY    = "PASTE_YOUR_GEMINI_API_KEY_HERE"
 # ============================================================
 
@@ -700,7 +700,7 @@ def main():
         if not indigo_f.empty:
             lf_data = indigo_f.groupby(["Flight No.", "Departure Time"])["Load Factor"].mean().reset_index()
             lf_data["LF %"] = (lf_data["Load Factor"] * 100).round(1)
-            lf_data["Label"] = lf_data["Flight No."] + " " + lf_data["Departure Time"]
+            lf_data["Label"] = lf_data["Flight No."].astype(str) + " " + lf_data["Departure Time"].astype(str)
             lf_data["Color"] = lf_data["Load Factor"].apply(
                 lambda x: "#2ecc71" if x <= 0.70 else ("#f39c12" if x <= 0.85 else "#e74c3c")
             )
