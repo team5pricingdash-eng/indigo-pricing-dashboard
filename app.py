@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, date
 # ============================================================
 # !! FILL THESE IN !!
 # ============================================================
-GOOGLE_SHEET_NAME = "Pricing Intelligence"
+GOOGLE_SHEET_NAME = "Price Intelligence"
 GEMINI_API_KEY    = "PASTE_YOUR_GEMINI_API_KEY_HERE"
 # ============================================================
 
