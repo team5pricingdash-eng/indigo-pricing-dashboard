@@ -52,14 +52,14 @@ st.set_page_config(page_title="IndiGo · Pricing Intelligence",
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:#f0f4f9;color:#1a2740;}
-.main{background:#f0f4f9;}
+html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:#F5F7FA;color:#1a2740;}
+.main{background:#F5F7FA;}
 .block-container{padding:0 1.2rem 2rem!important;max-width:100%!important;overflow-x:hidden!important;}
 
 /* ── Header ── */
-.pid-hdr{background:linear-gradient(135deg,#0a2d6e 0%,#1554b0 55%,#0e7dd4 100%);
+.pid-hdr{background:linear-gradient(135deg,#1B2D6B 0%,#2a4fba 60%,#E91E8C 100%);
   padding:0.75rem 1.4rem;margin:0 -1.2rem 1rem;display:flex;align-items:center;
-  justify-content:space-between;box-shadow:0 3px 16px rgba(10,45,110,0.18);}
+  justify-content:space-between;box-shadow:0 3px 16px rgba(27,45,107,0.25);}
 .pid-title{font-size:1.05rem;font-weight:700;color:#fff;letter-spacing:-0.01em;}
 .pid-sub{font-size:0.58rem;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:0.05em;}
 .pid-stats{display:flex;gap:0.9rem;align-items:center;}
@@ -74,28 +74,28 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:#f0f4f9;col
 
 /* ── KPI strip ── */
 .kpi-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:0.8rem;margin-bottom:1rem;}
-.kpi-card{background:#fff;border:1px solid #dce8f5;border-radius:10px;padding:0.8rem 1rem;
+.kpi-card{background:#fff;border:1px solid #dde3f0;border-radius:10px;padding:0.8rem 1rem;
   box-shadow:0 1px 6px rgba(10,45,110,0.05);}
-.kpi-val{font-size:1.4rem;font-weight:700;color:#0a2d6e;font-family:'DM Mono',monospace;line-height:1;}
+.kpi-val{font-size:1.4rem;font-weight:700;color:#1B2D6B;font-family:'DM Mono',monospace;line-height:1;}
 .kpi-lbl{font-size:0.6rem;color:#6a90bf;text-transform:uppercase;letter-spacing:0.08em;margin-top:0.25rem;}
 .kpi-sub{font-size:0.65rem;color:#6a90bf;margin-top:0.15rem;}
 .kpi-green{color:#16a34a!important;}
 .kpi-amber{color:#d97706!important;}
 .kpi-red{color:#dc2626!important;}
 .kpi-blue{color:#1554b0!important;}
-.kpi-purple{color:#7c3aed!important;}
+.kpi-purple{color:#E91E8C!important;}
 
 /* ── Section label ── */
 .sec-hd{font-size:0.6rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;
-  color:#1554b0;margin:0 0 0.55rem 0;display:flex;align-items:center;gap:0.4rem;}
-.sec-hd::after{content:'';flex:1;height:1px;background:#dce8f5;}
+  color:#1B2D6B;margin:0 0 0.55rem 0;display:flex;align-items:center;gap:0.4rem;}
+.sec-hd::after{content:'';flex:1;height:1px;background:#dde3f0;}
 
 /* ── Compact fare table ── */
 .fare-tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:0.71rem;
   border:1px solid #dce8f5;border-radius:10px;overflow:hidden;table-layout:fixed;}
 .fare-tbl thead tr{background:#f7faff;}
 .fare-tbl th{padding:0.45rem 0.5rem;font-size:0.57rem;font-weight:700;letter-spacing:0.07em;
-  text-transform:uppercase;color:#1554b0;border-bottom:2px solid #dce8f5;text-align:left;
+  text-transform:uppercase;color:#1B2D6B;border-bottom:2px solid #dde3f0;text-align:left;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .fare-tbl td{padding:0.4rem 0.5rem;border-bottom:1px solid #f0f4f9;color:#2a4060;
   font-family:'DM Mono',monospace;font-size:0.69rem;background:#fff;
@@ -106,9 +106,9 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:#f0f4f9;col
   font-family:'DM Sans',sans-serif!important;font-weight:700!important;
   font-size:0.7rem!important;padding:0.3rem 0.5rem!important;
   border-top:2px solid #bdd4f0!important;}
-.f-indigo{color:#1554b0!important;font-weight:600;}
-.f-arith{color:#7c3aed!important;font-weight:600;}
-.f-airec{color:#0891b2!important;font-weight:700;}
+.f-indigo{color:#1B2D6B!important;font-weight:600;}
+.f-arith{color:#E91E8C!important;font-weight:600;}
+.f-airec{color:#1B2D6B!important;font-weight:700;}
 .f-ailog{color:#059669!important;font-weight:600;}
 .f-cheaper{color:#16a34a!important;font-weight:600;}
 .f-pricier{color:#dc2626!important;}
@@ -119,7 +119,7 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:#f0f4f9;col
 
 /* ── AI panel ── */
 .ai-panel{background:linear-gradient(135deg,#f0f7ff 0%,#e8f0fe 100%);
-  border:1.5px solid #1554b0;border-radius:12px;padding:0.9rem 1.1rem;margin-bottom:0.8rem;}
+  border:1.5px solid #1B2D6B;border-radius:12px;padding:0.9rem 1.1rem;margin-bottom:0.8rem;}
 .ai-badge-approve{display:inline-block;background:#dcfce7;border:1px solid #16a34a;color:#15803d;
   font-size:0.68rem;font-weight:700;padding:0.18rem 0.6rem;border-radius:20px;}
 .ai-badge-override{display:inline-block;background:#fef3c7;border:1px solid #d97706;color:#b45309;
@@ -127,11 +127,11 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:#f0f4f9;col
 .ai-price{font-size:1.9rem;font-weight:700;color:#0a2d6e;font-family:'DM Mono',monospace;
   line-height:1.1;margin:0.3rem 0;}
 .ai-rationale{font-size:0.75rem;color:#3a5a8a;line-height:1.6;padding:0.45rem 0.7rem;
-  background:rgba(255,255,255,0.7);border-left:3px solid #1554b0;
+  background:rgba(255,255,255,0.7);border-left:3px solid #E91E8C;
   border-radius:0 6px 6px 0;margin-top:0.45rem;}
 
 /* ── Arithmetic box ── */
-.arith-box{background:#f7faff;border:1px solid #dce8f5;border-radius:8px;
+.arith-box{background:#f7faff;border:1px solid #dde3f0;border-radius:8px;
   padding:0.5rem 0.8rem;font-size:0.68rem;color:#3a5a8a;margin-bottom:0.6rem;
   font-family:'DM Mono',monospace;line-height:1.8;}
 .bd-row{display:flex;justify-content:space-between;border-bottom:1px dashed #e0eaf5;padding:0.03rem 0;}
@@ -139,38 +139,38 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:#f0f4f9;col
 .bd-pos{color:#dc2626;}.bd-neg{color:#16a34a;}.bd-neu{color:#6a90bf;}
 
 /* ── Flight pill ── */
-.flt-pill{background:#f0f7ff;border:1px solid #bdd4f0;border-radius:8px;
+.flt-pill{background:#f0f3ff;border:1px solid #c0caed;border-radius:8px;
   padding:0.45rem 0.7rem;font-size:0.71rem;color:#2a4060;margin-bottom:0.6rem;line-height:1.65;}
-.flt-pill-title{font-size:0.85rem;font-weight:700;color:#0a2d6e;font-family:'DM Mono',monospace;}
+.flt-pill-title{font-size:0.85rem;font-weight:700;color:#1B2D6B;font-family:'DM Mono',monospace;}
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"]{background:#fff!important;border-right:1px solid #dce8f5;}
 section[data-testid="stSidebar"] .block-container{padding:0.9rem 0.8rem;}
-.sb-brand{font-size:0.9rem;font-weight:700;color:#0a2d6e;padding-bottom:0.8rem;
-  border-bottom:2px solid #1554b0;margin-bottom:0.9rem;}
+.sb-brand{font-size:0.9rem;font-weight:700;color:#1B2D6B;padding-bottom:0.8rem;
+  border-bottom:2px solid #E91E8C;margin-bottom:0.9rem;}
 
 /* ── Widget overrides ── */
 .stSelectbox label,.stDateInput label,.stRadio>label{
-  color:#1554b0!important;font-size:0.62rem!important;font-weight:700!important;
+  color:#1B2D6B!important;font-size:0.62rem!important;font-weight:700!important;
   text-transform:uppercase!important;letter-spacing:0.08em!important;}
-.stSelectbox>div>div{background:#f7faff!important;border:1px solid #bdd4f0!important;
+.stSelectbox>div>div{background:#f7faff!important;border:1px solid #c0caed!important;
   color:#1a2740!important;border-radius:8px!important;}
 .stRadio>div{flex-direction:row!important;gap:0.5rem!important;flex-wrap:wrap!important;}
 .stRadio>div>label{color:#2a4060!important;font-size:0.74rem!important;text-transform:none!important;
   letter-spacing:0!important;font-weight:500!important;background:#f7faff;
   border:1px solid #bdd4f0;border-radius:6px;padding:0.2rem 0.6rem;}
-.stButton>button{background:linear-gradient(135deg,#0a2d6e 0%,#1554b0 100%);
+.stButton>button{background:linear-gradient(135deg,#1B2D6B 0%,#E91E8C 100%);
   color:white;border:none;border-radius:8px;font-family:'DM Sans',sans-serif;
   font-size:0.82rem;font-weight:700;padding:0.45rem 1rem;width:100%;
   box-shadow:0 2px 8px rgba(10,45,110,0.2);}
-.stButton>button:hover{background:linear-gradient(135deg,#1554b0 0%,#0e7dd4 100%);}
+.stButton>button:hover{background:linear-gradient(135deg,#E91E8C 0%,#1B2D6B 100%);}
 div[data-testid="metric-container"]{background:#fff!important;border:1px solid #dce8f5!important;
   border-radius:10px;padding:0.65rem 0.9rem;box-shadow:0 1px 6px rgba(10,45,110,0.05);}
 div[data-testid="metric-container"] label{color:#6a90bf!important;font-size:0.6rem!important;
   text-transform:uppercase;letter-spacing:0.07em;}
-div[data-testid="metric-container"] [data-testid="metric-value"]{color:#0a2d6e!important;
+div[data-testid="metric-container"] [data-testid="metric-value"]{color:#1B2D6B!important;
   font-family:'DM Mono',monospace!important;font-size:1.2rem!important;font-weight:700!important;}
-.stDateInput>div>div>input{background:#f7faff!important;border:1px solid #bdd4f0!important;
+.stDateInput>div>div>input{background:#f7faff!important;border:1px solid #c0caed!important;
   color:#1a2740!important;border-radius:8px!important;}
 </style>
 """, unsafe_allow_html=True)
@@ -311,7 +311,7 @@ Reply EXACTLY:
 Decision: Approve OR Override
 Suggested Fare: ₹[number]
 Rationale: [2-3 sentences]"""
-    url=f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url=f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     payload={"contents":[{"parts":[{"text":prompt}]}]}
     try:
         resp=requests.post(url,json=payload,timeout=30)
@@ -346,7 +346,7 @@ def comp_cls(v,base):
         if v>base*1.03: return "f-pricier"
         return "f-similar"
     except: return ""
-CHART=dict(plot_bgcolor="#fff",paper_bgcolor="#fff",margin=dict(l=8,r=8,t=8,b=8),font=dict(color="#2a4060",family="DM Sans"))
+CHART=dict(plot_bgcolor="#ffffff",paper_bgcolor="#ffffff",margin=dict(l=8,r=8,t=8,b=8),font=dict(color="#1a2740",family="DM Sans"))
 
 
 # ── MAIN ─────────────────────────────────────────────────────
@@ -364,7 +364,7 @@ def main():
 
     # ── SIDEBAR ─────────────────────────────────────────────
     with st.sidebar:
-        st.markdown('<div class="sb-brand">✈ IndiGo · Pricing Intelligence</div>',unsafe_allow_html=True)
+        st.markdown('<div class="sb-brand"><span style="color:#E91E8C;font-weight:800">6E</span> IndiGo · Pricing Intelligence</div>',unsafe_allow_html=True)
         routes=sorted(indigo_df["Route"].dropna().unique().tolist())
         sel_route=st.selectbox("Route",routes)
         cabins=sorted(indigo_df["Cabin Class"].dropna().unique().tolist())
@@ -431,7 +431,7 @@ def main():
     st.markdown(f"""
     <div class="pid-hdr">
       <div>
-        <div class="pid-title">✈ IndiGo Pricing Intelligence Dashboard</div>
+        <div class="pid-title"><span style="color:#E91E8C;font-weight:800">6E</span> IndiGo Pricing Intelligence</div>
         <div class="pid-sub">Real-Time Fare Monitor · AI Recommendation Engine · ISB ALP 2026</div>
       </div>
       <div class="pid-stats">
