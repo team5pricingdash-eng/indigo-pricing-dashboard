@@ -466,10 +466,12 @@ def style_chart(fig, height=260, legend=True):
     fig.update_layout(
         plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
         font=dict(color="#2a4060", family="DM Sans", size=11),
-        margin=dict(l=10, r=10, t=10, b=10),
+        margin=dict(l=10, r=14, t=58 if legend else 12, b=10),
         height=height, showlegend=legend,
-        legend=dict(bgcolor="rgba(255,255,255,0.9)", bordercolor="#dde3f0",
-                    borderwidth=1, font=dict(size=9), orientation="h", y=1.14, x=0),
+        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="rgba(0,0,0,0)",
+                    borderwidth=0, font=dict(size=10), orientation="h",
+                    y=1.02, yanchor="bottom", x=0, xanchor="left",
+                    itemsizing="constant"),
         hovermode="closest",
     )
     fig.update_xaxes(gridcolor="#f0f3fa", linecolor="#dde3f0", zeroline=False)
@@ -1965,7 +1967,10 @@ def render_dashboard(C):
                 hist["Full%"] = (pd.to_numeric(hist["Load Factor"],
                                                errors="coerce") * 100).round(1)
                 seats = pd.to_numeric(hist["Seats Sold"], errors="coerce")
-                hist["Booked"] = seats.diff().fillna(seats).clip(lower=0)
+                # The first reading has no prior day. Counting its full seat
+                # total as one day's sales produced a single 110-seat bar that
+                # flattened every real day beside it. Leave it blank instead.
+                hist["Booked"] = seats.diff().clip(lower=0)
                 hist["dout"] = pd.to_numeric(hist["Days to Departure"], errors="coerce")
                 hist["Usual%"] = hist["dout"].map(
                     lambda d: pace_curve.get((sel_route, sel_cabin, int(d)))
@@ -1992,9 +1997,8 @@ def render_dashboard(C):
                     hovertemplate="%{y:.0f} seats<extra></extra>"), row=1, col=1)
                 fig.add_trace(go.Scatter(
                     x=hist[dcol], y=hist["Full%"], name="This flight",
-                    mode="lines+markers", line=dict(color=NAVY, width=2.5),
-                    marker=dict(size=5, color=NAVY), fill="tozeroy",
-                    fillcolor="rgba(27,45,107,0.07)",
+                    mode="lines+markers", line=dict(color=NAVY, width=2.6),
+                    marker=dict(size=5, color=NAVY),
                     hovertemplate="%{y:.1f}% full<extra></extra>"), row=2, col=1)
                 if hist["Usual%"].notna().any():
                     fig.add_trace(go.Scatter(
@@ -2002,13 +2006,22 @@ def render_dashboard(C):
                         mode="lines", line=dict(color=AMBER, width=2, dash="dot"),
                         hovertemplate="%{y:.1f}% typical<extra></extra>"),
                         row=2, col=1)
-                fig.update_yaxes(title_text="Seats", row=1, col=1)
-                fig.update_yaxes(title_text="% full", range=[0, 105], row=2, col=1)
-                fig.update_xaxes(type="date", tickformat="%d-%m",
-                                 range=[win_from, today], row=1, col=1)
-                fig.update_xaxes(type="date", tickformat="%d-%m", dtick=86400000 * 2,
-                                 range=[win_from, today], title_text="", row=2, col=1)
-                style_chart(fig, height=340)
+                lo = hist[dcol].min() - pd.Timedelta(days=1)
+                hi = hist[dcol].max() + pd.Timedelta(days=1)
+                span = max((hi - lo).days, 1)
+                step = 2 if span <= 16 else (4 if span <= 34 else 7)
+                bmax = float(hist["Booked"].max() or 0)
+                fig.update_yaxes(title_text="Seats sold", row=1, col=1,
+                                 range=[0, max(bmax * 1.35, 5)])
+                # Start near the data rather than at zero, so the climb is visible
+                ylo = max(0, min(hist["Full%"].min(), hist["Usual%"].min()
+                                 if hist["Usual%"].notna().any() else 100) - 12)
+                fig.update_yaxes(title_text="% full", range=[ylo, 100], row=2, col=1)
+                for rr in (1, 2):
+                    fig.update_xaxes(type="date", tickformat="%d %b",
+                                     dtick=86400000 * step, tickangle=0,
+                                     range=[lo, hi], title_text="", row=rr, col=1)
+                style_chart(fig, height=360)
                 st.plotly_chart(fig, use_container_width=True)
                 st.caption("Pink bars are seats sold each day. Navy is how full the "
                            "flight is; dotted amber is how full this route usually "
@@ -2091,7 +2104,12 @@ def render_dashboard(C):
         if frames:
             allt = pd.concat(frames, ignore_index=True).dropna(subset=["Fare"])
             allt["Date"] = pd.to_datetime(allt["Date"], errors="coerce")
-            allt = allt.dropna(subset=["Date"]).sort_values("Date")
+            allt = allt.dropna(subset=["Date"])
+            # Duplicate readings on the same day drew vertical spikes that made
+            # the line unreadable. One value per series per day.
+            allt["Date"] = allt["Date"].dt.normalize()
+            allt = (allt.groupby(["Date", "Series"], as_index=False)["Fare"]
+                    .mean().sort_values("Date"))
             fig2 = px.line(allt, x="Date", y="Fare", color="Series", markers=True,
                            color_discrete_map={
                                "Air India": SKY, "Akasa Air": RED,
@@ -2104,12 +2122,19 @@ def render_dashboard(C):
                     tr.line.dash = "dash"; tr.line.width = 2.5
                 if tr.name in ("IndiGo (AI accepted)", "IndiGo (manager set)"):
                     tr.mode = "markers"
-                    tr.marker.size = 15
+                    tr.marker.size = 16
                     tr.marker.symbol = "star"
-            fig2.update_yaxes(title_text="Fare (₹)")
-            fig2.update_xaxes(type="date", tickformat="%d-%m", title_text="",
-                              range=[win_from, today])
-            style_chart(fig2, height=340)
+                    tr.marker.line = dict(width=1.2, color="#ffffff")
+            fig2.update_yaxes(title_text="Fare (₹)", tickprefix="₹",
+                              separatethousands=True)
+            tlo = allt["Date"].min() - pd.Timedelta(days=1)
+            thi = allt["Date"].max() + pd.Timedelta(days=1)
+            tspan = max((thi - tlo).days, 1)
+            tstep = 2 if tspan <= 16 else (4 if tspan <= 34 else 7)
+            fig2.update_xaxes(type="date", tickformat="%d %b", title_text="",
+                              dtick=86400000 * tstep, tickangle=0,
+                              range=[tlo, thi])
+            style_chart(fig2, height=360)
             st.plotly_chart(fig2, use_container_width=True)
             st.caption(f"{win.lower()}, for this flight and cabin only. Rivals "
                        "are limited to departures within three hours of ours. "
