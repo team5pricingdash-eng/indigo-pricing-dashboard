@@ -1535,26 +1535,25 @@ def render_dashboard(C):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ══════════ 30-DAY ROUTE × DATE MATRIX ══════════
-    st.markdown('<div class="sec-hd">Next 30 days at a glance — every route</div>',
-                unsafe_allow_html=True)
+    # ══════════ ROUTE × DEPARTURE-DATE MATRIX ══════════
+    st.markdown('<div class="sec-hd">Route by departure date — the whole '
+                'network on one screen</div>', unsafe_allow_html=True)
 
-    mc1, mc2, mc3 = st.columns([1.4, 1, 1])
+    mc1, mc2, mc3 = st.columns([1.5, 1, 1])
     with mc1:
         metric = st.selectbox(
-            "Show me",
+            "Colour the squares by",
             ["How full each flight is",
              "Selling speed vs normal",
              "Our fare",
-             "Gap against closest rival"],
-            key="mx_metric")
+             "Gap against closest rival"], key="mx_metric")
     with mc2:
         mx_cabin = st.selectbox("Cabin", C["cabins"],
                                 index=C["cabins"].index(sel_cabin)
                                 if sel_cabin in C["cabins"] else 0, key="mx_cabin")
     with mc3:
-        mx_days = st.selectbox("Days ahead", [14, 30, 45],
-                               index=1, key="mx_days")
+        mx_days = st.selectbox("How far ahead", [14, 30, 45], index=1,
+                               key="mx_days")
 
     mx_end = today + timedelta(days=int(mx_days))
     mx_src = indigo_df[(indigo_df["Cabin Class"] == mx_cabin) &
@@ -1567,18 +1566,21 @@ def render_dashboard(C):
         mx_src = (mx_src.sort_values(dcol)
                   .groupby(["Route", "Flight No.", "Departure Date"],
                            as_index=False).last())
-        cla = C["comp_latest_all"]
-        dates = sorted(mx_src["Departure Date"].unique())
+        cla   = C["comp_latest_all"]
+        dates = sorted(pd.to_datetime(mx_src["Departure Date"].unique()))
         rts   = sorted(mx_src["Route"].unique())
 
         Z, T, H = [], [], []
+        stats = {"full": [], "gap": [], "pace": []}
+        worst = {"gap": None, "pace": None, "full": None}
+
         for rt in rts:
             zr, tr, hr = [], [], []
             for dd in dates:
                 sub = mx_src[(mx_src["Route"] == rt) &
                              (mx_src["Departure Date"] == dd)]
                 if sub.empty:
-                    zr.append(np.nan); tr.append(""); hr.append("no flight")
+                    zr.append(None); tr.append(""); hr.append("No flight")
                     continue
                 lfs, fares, gaps, paces = [], [], [], []
                 for _, g in sub.iterrows():
@@ -1586,85 +1588,150 @@ def render_dashboard(C):
                     lf   = float(g.get("Load Factor", 0) or 0)
                     dout = int(g.get("Days to Departure", 30) or 30)
                     hol  = str(g.get("Holiday / Festival", "No")) == "Yes"
-                    cm = cla[(cla["Route"] == rt) & (cla["Cabin Class"] == mx_cabin) &
-                             (cla["Departure Date"] == dd)] if not cla.empty \
-                         else pd.DataFrame()
+                    cm = cla[(cla["Route"] == rt) &
+                             (cla["Cabin Class"] == mx_cabin) &
+                             (cla["Departure Date"] == dd)] \
+                         if not cla.empty else pd.DataFrame()
                     mt = match_competitor(cm, deph(ftm))
                     pl = pace_delta_for(pace_curve, rt, mx_cabin, dout, lf)
                     fv, _ = calc_fare(rt, mx_cabin, dout, lf,
                                       mt["fare"] if mt else 0, hol, deph(ftm),
                                       pace_delta=pl)
                     lfs.append(lf); fares.append(fv)
-                    if pl is not None: paces.append(pl)
+                    if pl is not None:
+                        paces.append(pl)
                     if mt and mt["fare"]:
                         gaps.append((fv - mt["fare"]) / mt["fare"])
 
-                lf_m   = float(np.mean(lfs)) if lfs else np.nan
-                fare_m = float(np.mean(fares)) if fares else np.nan
-                gap_m  = float(np.mean(gaps)) if gaps else np.nan
-                pace_m = float(np.mean(paces)) if paces else np.nan
+                lf_m   = float(np.mean(lfs))   if lfs   else None
+                fare_m = float(np.mean(fares)) if fares else None
+                gap_m  = float(np.mean(gaps))  if gaps  else None
+                pace_m = float(np.mean(paces)) if paces else None
+
+                if lf_m   is not None: stats["full"].append(lf_m)
+                if gap_m  is not None: stats["gap"].append(abs(gap_m))
+                if pace_m is not None: stats["pace"].append(pace_m)
+                if gap_m is not None and (worst["gap"] is None
+                                          or abs(gap_m) > abs(worst["gap"][2])):
+                    worst["gap"] = (rt, dd, gap_m)
+                if pace_m is not None and (worst["pace"] is None
+                                           or pace_m < worst["pace"][2]):
+                    worst["pace"] = (rt, dd, pace_m)
+                if lf_m is not None and (worst["full"] is None
+                                         or lf_m > worst["full"][2]):
+                    worst["full"] = (rt, dd, lf_m)
 
                 if metric == "How full each flight is":
-                    zr.append(lf_m * 100 if lf_m == lf_m else np.nan)
-                    tr.append(f"{lf_m*100:.0f}" if lf_m == lf_m else "")
+                    zr.append(round(lf_m * 100, 1) if lf_m is not None else None)
+                    tr.append(f"{lf_m*100:.0f}%" if lf_m is not None else "")
                 elif metric == "Selling speed vs normal":
-                    zr.append(pace_m * 100 if pace_m == pace_m else np.nan)
-                    tr.append(f"{pace_m*100:+.0f}" if pace_m == pace_m else "")
+                    zr.append(round(pace_m * 100, 1) if pace_m is not None else None)
+                    tr.append(f"{pace_m*100:+.0f}" if pace_m is not None else "")
                 elif metric == "Our fare":
-                    zr.append(fare_m if fare_m == fare_m else np.nan)
-                    tr.append(f"{fare_m/1000:.1f}k" if fare_m == fare_m else "")
+                    zr.append(round(fare_m) if fare_m is not None else None)
+                    tr.append(f"{fare_m/1000:.1f}k" if fare_m is not None else "")
                 else:
-                    zr.append(gap_m * 100 if gap_m == gap_m else np.nan)
-                    tr.append(f"{gap_m*100:+.0f}" if gap_m == gap_m else "")
+                    zr.append(round(gap_m * 100, 1) if gap_m is not None else None)
+                    tr.append(f"{gap_m*100:+.0f}%" if gap_m is not None else "")
 
                 hr.append(
-                    f"{rt}<br>{dfmt(dd)}<br>"
-                    f"{'—' if lf_m != lf_m else f'{lf_m*100:.0f}% full'}<br>"
+                    f"<b>{rt}</b><br>Departing {dfmt(dd, 'long')}<br>"
+                    f"{len(sub)} flight{'s' if len(sub) != 1 else ''} · {mx_cabin}"
+                    f"<br>─────────────<br>"
+                    f"{'—' if lf_m is None else f'{lf_m*100:.0f}% full'}<br>"
                     f"Our fare {inr(fare_m)}<br>"
-                    f"{'no rival' if gap_m != gap_m else f'{gap_m*100:+.0f}% vs rival'}<br>"
-                    f"{fill_speed_words(pace_m)[0]}")
+                    f"{'No rival flight' if gap_m is None else f'{gap_m*100:+.0f}% vs closest rival'}"
+                    f"<br>{fill_speed_words(pace_m)[0]}")
             Z.append(zr); T.append(tr); H.append(hr)
+
+        # ── Insight sentence before the picture ──
+        bits = []
+        if worst["full"]:
+            rt, dd, v = worst["full"]
+            bits.append(f'the fullest is <b>{rt}</b> on <b>{dfmt(dd)}</b> at '
+                        f'{v*100:.0f}%')
+        if worst["gap"]:
+            rt, dd, v = worst["gap"]
+            bits.append(f'the biggest price gap is <b>{rt}</b> on '
+                        f'<b>{dfmt(dd)}</b>, where we sit {abs(v)*100:.0f}% '
+                        f'{"above" if v > 0 else "below"} the closest rival')
+        if worst["pace"] and worst["pace"][2] < -0.03:
+            rt, dd, v = worst["pace"]
+            bits.append(f'the slowest seller is <b>{rt}</b> on <b>{dfmt(dd)}</b>, '
+                        f'{abs(v)*100:.0f} points behind normal')
+        avg_full = (f'{np.mean(stats["full"])*100:.0f}%'
+                    if stats["full"] else "n/a")
+        st.markdown(
+            f'<div class="insight">Looking at <b>{mx_cabin}</b> across '
+            f'<b>{len(rts)} routes</b> and the next <b>{mx_days} days</b>, '
+            f'flights are averaging <b>{avg_full} full</b>. Of these, '
+            + ("; ".join(bits) if bits else "nothing stands out") +
+            '.</div>', unsafe_allow_html=True)
+
+        with st.expander("How to read this grid"):
+            st.markdown(
+                "- **Each row is one route.** Each **column is one departure "
+                "date**, running from today rightwards.\n"
+                "- **Each square is therefore one route on one day** — for "
+                "example, Mumbai → Delhi departing 09-08-2026 — averaged "
+                f"across every {mx_cabin} flight IndiGo operates on that "
+                "route that day.\n"
+                "- **The number inside** the square is the value you picked in "
+                "*Colour the squares by*; the **colour** is the same value, so "
+                "you can spot patterns without reading every figure.\n"
+                "- **A blank square** means we have no flight on that route "
+                "that day.\n"
+                "- **Hover any square** for the full picture: how full, our "
+                "fare, the gap against the closest rival, and how fast it is "
+                "selling.\n\n"
+                "Read **across a row** to see how one route behaves as its "
+                "departure date approaches. Read **down a column** to compare "
+                "every route on the same day.")
 
         if metric == "How full each flight is":
             scale, zmid, cbar = "RdYlGn_r", None, "% full"
         elif metric == "Selling speed vs normal":
             scale, zmid, cbar = "RdYlGn", 0, "points vs normal"
         elif metric == "Our fare":
-            scale, zmid, cbar = "Blues", None, "₹"
+            scale, zmid, cbar = "Blues", None, "fare ₹"
         else:
             scale, zmid, cbar = "RdBu_r", 0, "% vs rival"
 
+        xlabels = [d.strftime("%d %b") for d in dates]
         fig_m = go.Figure(go.Heatmap(
-            z=Z, x=[dfmt(d, "day") for d in dates],
+            z=Z, x=xlabels,
             y=[r.replace(" to ", " → ") for r in rts],
-            text=T, texttemplate="%{text}", textfont=dict(size=9),
+            text=T, texttemplate="%{text}", textfont=dict(size=10),
             customdata=H, hovertemplate="%{customdata}<extra></extra>",
-            colorscale=scale, zmid=zmid,
+            colorscale=scale, zmid=zmid, hoverongaps=False,
             colorbar=dict(title=dict(text=cbar, font=dict(size=9)),
                           thickness=11, len=0.85),
-            xgap=1.5, ygap=1.5))
-        fig_m.update_xaxes(title_text="Departure date (dd-mm)", side="top",
-                           tickangle=-45, tickfont=dict(size=9))
-        fig_m.update_yaxes(title_text="", tickfont=dict(size=10))
-        style_chart(fig_m, height=90 + 46 * len(rts), legend=False)
+            xgap=2, ygap=2))
+        # Plain category axis — a date axis reads "26-07" as the year 2026
+        fig_m.update_xaxes(type="category", side="top", tickangle=-60,
+                           tickfont=dict(size=9), title_text="")
+        fig_m.update_yaxes(type="category", tickfont=dict(size=10),
+                           autorange="reversed", title_text="")
+        style_chart(fig_m, height=130 + 52 * len(rts), legend=False)
+        fig_m.update_layout(margin=dict(l=10, r=10, t=52, b=10))
         st.plotly_chart(fig_m, use_container_width=True)
 
         note = {
             "How full each flight is":
-                "Red means nearly full — a candidate for a higher fare. "
-                "Green means plenty of empty seats.",
+                "Red squares are nearly full flights — candidates for a higher "
+                "fare. Green squares have plenty of empty seats.",
             "Selling speed vs normal":
                 "Green means selling faster than this route usually does by "
-                "this point; red means slower and may need a sharper price.",
+                "this point. Red means slower, and may need a sharper price. "
+                "The number is percentage points above or below normal.",
             "Our fare":
-                "Darker means a higher fare. Look for jumps between "
-                "neighbouring days that you cannot explain.",
+                "Darker blue is a higher fare, shown in thousands of rupees. "
+                "Look for jumps between neighbouring days you cannot explain.",
             "Gap against closest rival":
                 "Red means we are dearer than the nearest rival departure, "
-                "blue means we are cheaper. White is roughly level.",
+                "blue means cheaper, white roughly level.",
         }[metric]
-        st.caption(f"{mx_cabin}, averaged across the flights on each route "
-                   f"each day. {note} Hover any square for the detail.")
+        st.caption(note)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
