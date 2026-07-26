@@ -284,20 +284,31 @@ FEEDBACK_HDRS = ["Timestamp", "Route", "Flight No.", "Departure Time", "Departur
 
 AILOG_HDRS = ["Log Date", "Route", "Flight No.", "Departure Time", "Departure Date",
               "Cabin Class", "Days to Departure", "Load Factor", "Arithmetic Fare",
-              "AI Decision", "AI Suggested Fare", "Engine",
-              "Manager Decision", "Final Fare Used"]
+              "AI Decision", "AI Suggested Fare", "AI Rationale", "Engine",
+              "Strategic Direction", "Manager Decision", "Final Fare Used"]
 
 
 def _append(tab, hdrs, row):
+    """Appends a row, adding any header columns the sheet does not yet have.
+    Safe to run against tabs created by an older version of this app."""
     sh = get_sheet()
     try:
         ws = sh.worksheet(tab)
     except Exception:
-        ws = sh.add_worksheet(tab, rows=5000, cols=len(hdrs) + 2)
-        ws.append_row(hdrs)
-    if not ws.row_values(1):
-        ws.append_row(hdrs)
-    ws.append_row([row.get(h, "") for h in hdrs])
+        ws = sh.add_worksheet(tab, rows=5000, cols=len(hdrs) + 6)
+        ws.append_row(hdrs, value_input_option="RAW")
+
+    existing = ws.row_values(1)
+    if not existing:
+        ws.append_row(hdrs, value_input_option="RAW")
+        existing = list(hdrs)
+
+    missing = [h for h in hdrs if h not in existing]
+    for i, h in enumerate(missing, start=len(existing) + 1):
+        ws.update_cell(1, i, h)
+    existing = existing + missing
+
+    ws.append_row([row.get(h, "") for h in existing], value_input_option="RAW")
 
 
 def save_feedback(row): _append(FEEDBACK_TAB, FEEDBACK_HDRS, row)
@@ -312,6 +323,18 @@ def inr(v):
         return f"₹{int(round(float(v))):,}"
     except Exception:
         return "—"
+
+
+def dkey(v):
+    """Normalise any date-ish value to YYYY-MM-DD so lookups match reliably
+    regardless of how Google Sheets returned it."""
+    try:
+        t = pd.to_datetime(v, errors="coerce")
+        if pd.isna(t):
+            return str(v)[:10]
+        return t.strftime("%Y-%m-%d")
+    except Exception:
+        return str(v)[:10]
 
 
 def lf_cls(lf):
@@ -737,8 +760,12 @@ def main():
     frow    = indigo_f[(indigo_f["Flight No."] == f_no) &
                        (indigo_f["Departure Date"] == f_date)]
     f_lf    = float(frow["Load Factor"].iloc[0]) if not frow.empty else 0.6
-    f_sold  = int(frow["Seats Sold"].iloc[0]) if not frow.empty else 0
     f_total = int(frow["Total Seats"].iloc[0]) if not frow.empty else 180
+    _raw_sold = frow["Seats Sold"].iloc[0] if not frow.empty else 0
+    f_sold = 0 if pd.isna(_raw_sold) else int(_raw_sold)
+    # Sheet sometimes carries a blank seat count; derive it from load factor
+    if f_sold <= 0 and f_lf > 0:
+        f_sold = int(round(f_lf * f_total))
     f_hol   = str(frow["Holiday / Festival"].iloc[0]) if not frow.empty else "No"
     f_slot  = str(frow["Time Slot"].iloc[0]) if not frow.empty else ""
 
@@ -755,9 +782,10 @@ def main():
     # Latest AI log entry for this flight
     ai_today, mgr_today = "—", "Pending"
     if not ai_log_df.empty and "Flight No." in ai_log_df.columns:
-        tl = ai_log_df[(ai_log_df["Flight No."].astype(str) == f_no) &
-                       (ai_log_df["Departure Date"].astype(str).str[:10]
-                        == str(f_date)[:10])]
+        _log = ai_log_df.copy()
+        _log["_dk"] = _log["Departure Date"].map(dkey)
+        tl = _log[(_log["Flight No."].astype(str) == f_no) &
+                  (_log["_dk"] == dkey(f_date))]
         if not tl.empty:
             ai_today  = inr(tl.iloc[-1].get("AI Suggested Fare", ""))
             mgr_today = str(tl.iloc[-1].get("Manager Decision", "Pending") or "Pending")
@@ -767,7 +795,9 @@ def main():
     if not feedback_df.empty and "Timestamp" in feedback_df.columns:
         fb = feedback_df.copy()
         fb["_ts"] = pd.to_datetime(fb["Timestamp"], errors="coerce")
+        fb["_dk"] = fb.get("Departure Date", pd.Series(dtype=str)).map(dkey)
         m = fb[(fb.get("Flight No.", pd.Series(dtype=str)).astype(str) == f_no) &
+               (fb["_dk"] == dkey(f_date)) &
                (fb["_ts"] >= today) &
                (fb.get("Manager Decision", pd.Series(dtype=str)) == "Overridden")]
         if not m.empty:
@@ -853,7 +883,12 @@ def main():
 
         if st.button("🤖  Get AI recommendation"):
             hist = []
-            if not feedback_df.empty and "Route" in feedback_df.columns:
+            if not ai_log_df.empty and "Route" in ai_log_df.columns:
+                _h = ai_log_df[(ai_log_df["Route"] == sel_route) &
+                               (ai_log_df.get("Manager Decision", "")
+                                .isin(["Accepted", "Overridden"]))]
+                hist = _h.to_dict("records")
+            if not hist and not feedback_df.empty and "Route" in feedback_df.columns:
                 hist = feedback_df[feedback_df["Route"] == sel_route].to_dict("records")
             with st.spinner("Asking the pricing analyst..."):
                 dec, fare, rat, engine, note = call_llm(
@@ -868,15 +903,17 @@ def main():
                              "Cabin Class": sel_cabin, "Days to Departure": f_days,
                              "Load Factor": round(f_lf * 100, 1),
                              "Arithmetic Fare": arith, "AI Decision": dec,
-                             "AI Suggested Fare": fare, "Engine": engine,
+                             "AI Suggested Fare": fare, "AI Rationale": rat,
+                             "Engine": engine, "Strategic Direction": strategy,
                              "Manager Decision": "Pending", "Final Fare Used": ""})
             except Exception as e:
                 st.warning(f"Recommendation received but could not be logged: {e}")
             st.session_state["ai"] = {
                 "dec": dec, "fare": fare, "rat": rat, "arith": arith,
-                "flt": f_no, "time": f_time, "date": str(f_date)[:10],
+                "flt": f_no, "time": f_time, "date": dkey(f_date),
                 "days": f_days, "lf": f_lf, "strategy": strategy,
                 "engine": engine, "note": note}
+            st.rerun()   # redraw so the KPI strip picks up the new log entry
 
         if "ai" in st.session_state:
             r  = st.session_state["ai"]
@@ -938,7 +975,8 @@ def main():
                     "Cabin Class": sel_cabin, "Days to Departure": r["days"],
                     "Load Factor": round(r["lf"] * 100, 1),
                     "Arithmetic Fare": r["arith"], "AI Decision": r["dec"],
-                    "AI Suggested Fare": r["fare"], "Engine": r.get("engine", ""),
+                    "AI Suggested Fare": r["fare"], "AI Rationale": r["rat"],
+                    "Engine": r.get("engine", ""), "Strategic Direction": strat2,
                     "Manager Decision": kind, "Final Fare Used": final_fare})
 
             m1, m2 = st.columns(2)
@@ -975,7 +1013,7 @@ def main():
     if not feedback_df.empty and "Manager Decision" in feedback_df.columns:
         for _, x in feedback_df[feedback_df["Manager Decision"]
                                 .isin(["Accepted", "Overridden"])].iterrows():
-            k = (str(x.get("Flight No.", "")), str(x.get("Departure Date", ""))[:10])
+            k = (str(x.get("Flight No.", "")), dkey(x.get("Departure Date", "")))
             try:
                 acc_lookup[k] = int(x.get("Final Fare Used", 0))
             except Exception:
@@ -984,7 +1022,7 @@ def main():
     log_lookup = {}
     if not ai_log_df.empty and "Flight No." in ai_log_df.columns:
         for _, x in ai_log_df.iterrows():
-            k = (str(x.get("Flight No.", "")), str(x.get("Departure Date", ""))[:10])
+            k = (str(x.get("Flight No.", "")), dkey(x.get("Departure Date", "")))
             try:
                 log_lookup[k] = int(x.get("AI Suggested Fare", 0))
             except Exception:
@@ -1029,8 +1067,9 @@ def main():
         ar, _ = calc_fare(sel_route, sel_cabin, int(dout), lf, bc,
                           hol == "Yes", deph(ftm), pax_type, trip_type)
 
-        rec = acc_lookup.get((fno, ds)) or log_lookup.get((fno, ds))
-        rec_cls = "f-ai" if acc_lookup.get((fno, ds)) else "f-ailog"
+        dk = dkey(dd)
+        rec = acc_lookup.get((fno, dk)) or log_lookup.get((fno, dk))
+        rec_cls = "f-ai" if acc_lookup.get((fno, dk)) else "f-ailog"
 
         aif, aifl = "—", "—"
         if not ai_c.empty:
@@ -1215,7 +1254,80 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ══════════ 5 · PROFITABILITY ══════════
+    # ══════════ 5 · RECOMMENDATION HISTORY (feedback loop data bank) ══════════
+    st.markdown('<div class="sec-hd">Recommendation history — feedback loop data bank</div>',
+                unsafe_allow_html=True)
+
+    if ai_log_df.empty:
+        st.info("No recommendations logged yet. Each AI call is recorded here with "
+                "its rationale and the manager's decision, and this history is fed "
+                "back into future prompts.")
+    else:
+        hist_df = ai_log_df.copy()
+
+        h1, h2, h3 = st.columns([1, 1, 2])
+        with h1:
+            scope = st.radio("Show", ["This route", "All routes"],
+                             index=0, horizontal=True, key="hist_scope")
+        with h2:
+            outcome = st.selectbox("Outcome", ["All", "Accepted", "Overridden",
+                                               "Pending"], key="hist_outcome")
+
+        if scope == "This route" and "Route" in hist_df.columns:
+            hist_df = hist_df[hist_df["Route"] == sel_route]
+        if outcome != "All" and "Manager Decision" in hist_df.columns:
+            hist_df = hist_df[hist_df["Manager Decision"] == outcome]
+
+        # Keep the latest entry per flight + departure + log date, so a manager
+        # decision supersedes the earlier "Pending" row for the same call.
+        keys = [c for c in ["Log Date", "Flight No.", "Departure Date"]
+                if c in hist_df.columns]
+        if keys and not hist_df.empty:
+            hist_df = hist_df.drop_duplicates(subset=keys, keep="last")
+
+        if hist_df.empty:
+            st.info("No entries match this filter.")
+        else:
+            with h3:
+                n_acc = int((hist_df.get("Manager Decision", pd.Series(dtype=str))
+                             == "Accepted").sum())
+                n_ovr = int((hist_df.get("Manager Decision", pd.Series(dtype=str))
+                             == "Overridden").sum())
+                n_pen = int((hist_df.get("Manager Decision", pd.Series(dtype=str))
+                             == "Pending").sum())
+                total = max(len(hist_df), 1)
+                st.markdown(
+                    f'<div style="padding-top:1.1rem;font-size:0.72rem;color:#3a5080;">'
+                    f'<b>{len(hist_df)}</b> recommendations &nbsp;·&nbsp; '
+                    f'<span style="color:{GREEN}">{n_acc} accepted</span> &nbsp;·&nbsp; '
+                    f'<span style="color:{AMBER}">{n_ovr} overridden</span> &nbsp;·&nbsp; '
+                    f'<span style="color:#8095bd">{n_pen} pending</span> &nbsp;·&nbsp; '
+                    f'AI acceptance rate <b>{n_acc/total*100:.0f}%</b>'
+                    f'</div>', unsafe_allow_html=True)
+
+            if "Log Date" in hist_df.columns:
+                hist_df = hist_df.sort_values("Log Date", ascending=False)
+
+            show = [c for c in ["Log Date", "Route", "Flight No.", "Departure Time",
+                                "Departure Date", "Cabin Class", "Load Factor",
+                                "Arithmetic Fare", "AI Suggested Fare", "Engine",
+                                "Manager Decision", "Final Fare Used",
+                                "Strategic Direction", "AI Rationale"]
+                    if c in hist_df.columns]
+            st.dataframe(hist_df[show], use_container_width=True, hide_index=True,
+                         column_config={
+                             "AI Rationale": st.column_config.TextColumn(
+                                 "AI rationale", width="large"),
+                             "Log Date": st.column_config.DateColumn("Logged"),
+                         })
+            st.caption("Every AI call is stored with its reasoning and the manager's "
+                       "verdict. Accepted and overridden entries for the selected "
+                       "route are injected into the next prompt, so the engine learns "
+                       "which of its recommendations the pricing team actually trusts.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ══════════ 6 · PROFITABILITY ══════════
     st.markdown('<div class="sec-hd">Profitability from manager-approved fares</div>',
                 unsafe_allow_html=True)
 
