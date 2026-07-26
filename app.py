@@ -1132,8 +1132,10 @@ def main():
              if not comp_latest.empty else pd.DataFrame()
         match = match_competitor(cm, deph(ftm))
         pdlt = pace_delta_for(pace_curve, rt, cb, dout, lf)
+        # Standard adult one-way. Which flights need attention is a fact about
+        # the route, so it must not shift when someone changes the quote toggle.
         fare, bdx = calc_fare(rt, cb, dout, lf, match["fare"] if match else 0,
-                              hol, deph(ftm), pax_type, trip_type, pace_delta=pdlt)
+                              hol, deph(ftm), pace_delta=pdlt)
 
         gap  = (fare - match["fare"]) / match["fare"] if (match and match["fare"]) else None
         risk = abs(fare - match["fare"]) * remaining if match else 0
@@ -1171,10 +1173,18 @@ def main():
 
     # ── HEADER ───────────────────────────────────────────────
     date_disp = " & ".join(dfmt(d) for d in sel_dates)
+    # Each decision writes twice to the log (once on the AI call, once on the
+    # manager's verdict). Count distinct flight-days, not raw rows.
     n_today = 0
     if not ai_log_df.empty and "Log Date" in ai_log_df.columns:
-        n_today = int((pd.to_datetime(ai_log_df["Log Date"], errors="coerce")
-                       >= today).sum())
+        _t = ai_log_df.copy()
+        _t["_ld"] = pd.to_datetime(_t["Log Date"], errors="coerce")
+        _t = _t[_t["_ld"] >= today]
+        if not _t.empty:
+            _kcols = [c for c in ["Flight No.", "Cabin Class", "Departure Date"]
+                      if c in _t.columns]
+            n_today = int(_t.drop_duplicates(subset=_kcols).shape[0]) \
+                      if _kcols else len(_t)
     sh, sm = divmod(n_today * MANUAL_MINUTES_PER_SKU, 60)
     n_open = sum(1 for t in triage_rows if t["flag"] != "green" and not t["settled"])
 
@@ -1355,8 +1365,8 @@ def render_dashboard(C):
         <div class="kpi-sub">Today only</div></div>
       <div class="kpi-card">
         <div class="kpi-val {'k-green' if f_prof > 0 else 'k-red'}">{inr(f_prof)}</div>
-        <div class="kpi-lbl">Profit if all sold at this fare</div>
-        <div class="kpi-sub">{inr(p_seat)}/seat · cost {inr(cseat)}</div></div>
+        <div class="kpi-lbl">Profit on seats sold so far</div>
+        <div class="kpi-sub">{inr(p_seat)}/seat · {inr(p_seat * f_total)} if full</div></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1731,7 +1741,8 @@ def render_dashboard(C):
                 "Red means we are dearer than the nearest rival departure, "
                 "blue means cheaper, white roughly level.",
         }[metric]
-        st.caption(note)
+        st.caption(note + "  Fares here are the standard adult one-way price, "
+                   "so they do not move with the passenger type in the sidebar.")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2013,37 +2024,6 @@ def render_dashboard(C):
         else:
             st.info("No price history in this period for this flight.")
 
-    st.markdown('<div class="sec-hd">Price against how full the flight gets</div>',
-                unsafe_allow_html=True)
-    sc = indigo_df[(indigo_df["Route"] == sel_route) &
-                   (indigo_df["Cabin Class"] == sel_cabin)].copy()
-    if not sc.empty and dcol in sc.columns:
-        sc = sc[sc[dcol] >= win_from]
-    if sc.empty or dcol not in sc.columns:
-        st.info("Not enough history in this period.")
-    else:
-        sc = sc.dropna(subset=["Load Factor", "Days to Departure"])
-        pts = []
-        for _, g2 in sc.iterrows():
-            dl = pace_delta_for(pace_curve, sel_route, sel_cabin,
-                                int(g2["Days to Departure"]), float(g2["Load Factor"]))
-            v, _ = calc_fare(sel_route, sel_cabin, int(g2["Days to Departure"]),
-                             float(g2["Load Factor"]), 0,
-                             str(g2.get("Holiday / Festival", "No")) == "Yes",
-                             deph(g2.get("Departure Time", "10:00")), pace_delta=dl)
-            pts.append({"Fare": v, "Full": float(g2["Load Factor"]) * 100,
-                        "Days before departure": int(g2["Days to Departure"]),
-                        "Flight": fno_disp(g2["Flight No."], g2["Departure Time"])})
-        spd = pd.DataFrame(pts)
-        fig4 = px.scatter(spd, x="Fare", y="Full", color="Flight",
-                          size="Days before departure", size_max=13, opacity=0.65,
-                          color_discrete_sequence=[NAVY, MAGENTA, SKY, AMBER])
-        fig4.update_yaxes(title_text="% full", range=[0, 105])
-        fig4.update_xaxes(title_text="Fare our rules would charge (₹)")
-        style_chart(fig4, height=300)
-        st.plotly_chart(fig4, use_container_width=True)
-        st.caption("Each dot is one day's reading for one flight over the "
-                   f"{win.lower()}. Larger dots are further from departure.")
 
 
 # ═════════════════════════════════════════════════════════════
@@ -2385,7 +2365,8 @@ def render_history(C):
     n_acc = int((mgr == "Accepted").sum())
     n_ovr = int((mgr == "Overridden").sum())
     n_pen = int((mgr == "Pending").sum())
-    rate  = n_acc / max(len(h), 1) * 100
+    # Pending rows are not rejections, so they stay out of the denominator.
+    rate  = n_acc / max(n_acc + n_ovr, 1) * 100
     tracked = h["Seats booked next day"].dropna()
     out_txt = ""
     if len(tracked) > 0:
@@ -2398,8 +2379,9 @@ def render_history(C):
     st.markdown(
         f'<div class="insight"><b>{len(h)} fares reviewed.</b> {n_acc} accepted '
         f'as suggested, {n_ovr} overridden by a manager, {n_pen} awaiting a '
-        f'decision. Acceptance rate <span class="big">{rate:.0f}%</span>, which '
-        f'suggests {judge}.{out_txt}</div>', unsafe_allow_html=True)
+        f'decision. Of the {n_acc + n_ovr} actually decided, the acceptance rate '
+        f'is <span class="big">{rate:.0f}%</span>, which suggests {judge}.'
+        f'{out_txt}</div>', unsafe_allow_html=True)
 
     # Flight number is stored raw and can arrive as a float or long number
     if "Flight No." in h.columns:
@@ -2486,8 +2468,14 @@ def render_business_case(C):
 
         keys = ["Route", "Flight No.", "Cabin Class", "Departure Date"]
         bt["Seats Sold"] = pd.to_numeric(bt["Seats Sold"], errors="coerce")
-        bt["_new"] = (bt.groupby(keys)["Seats Sold"].diff()
-                      .fillna(bt["Seats Sold"]).clip(lower=0))
+        # Daily bookings = change in seats sold. The FIRST reading of a flight
+        # has no prior day, so those seats were sold before our data begins and
+        # we cannot know what fare they went at. Earlier versions counted them
+        # as one day's bookings, which put roughly a quarter of the volume on a
+        # single arbitrary day's price. They are now excluded.
+        bt["_new"] = bt.groupby(keys)["Seats Sold"].diff().clip(lower=0)
+        n_dropped = int(bt["_new"].isna().sum())
+        bt["_new"] = bt["_new"].fillna(0)
 
         dyn_rev = flat_rev = 0.0
         seats_n = 0
@@ -2527,6 +2515,10 @@ def render_business_case(C):
                 f'That is <span class="big">{inr(abs(uplift))} {word}</span>, or '
                 f'{abs(upct):.1f}%.</div>', unsafe_allow_html=True)
 
+            st.caption(f"Priced at the standard adult one-way fare. "
+                       f"{n_dropped} opening readings were excluded because the "
+                       f"seats in them were sold before our data starts, so the "
+                       f"fare they went at is unknown.")
             b1, b2, b3 = st.columns(3)
             b1.metric("Seats priced", f"{seats_n:,}")
             b2.metric("One flat fare throughout", inr(flat_rev))
