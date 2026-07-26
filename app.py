@@ -864,6 +864,42 @@ def sku_key(flight_raw, cabin, dep_date):
     return f"{str(flight_raw)}|{str(cabin)}|{dkey(dep_date)}"
 
 
+# Where a displayed fare came from. One colour per source, used everywhere.
+FARE_SRC = {
+    "arith":   ("#E91E8C", "Rules only"),
+    "ai":      ("#2F6FD0", "AI, accepted"),
+    "manager": ("#D97706", "Manager set"),
+}
+
+
+def effective_fare(decided, key, arithmetic):
+    """The fare actually in force for this flight today.
+
+    A manager's decision overrides the rules for the rest of the day, so every
+    table, chart and grid must show that number rather than recomputing the
+    arithmetic fare and quietly disagreeing with the decision just made.
+    Returns (fare, source) where source is arith | ai | manager.
+    """
+    hit = decided.get(key)
+    if not hit:
+        return arithmetic, "arith"
+    return hit[0], hit[1]
+
+
+def fare_dot(src):
+    return (f'<span class="fdot" style="background:{FARE_SRC[src][0]}" '
+            f'title="{FARE_SRC[src][1]}"></span>')
+
+
+def fare_legend():
+    bits = " &nbsp; ".join(
+        f'<span class="fdot" style="background:{c}"></span>{lbl}'
+        for c, lbl in FARE_SRC.values())
+    return (f'<div class="legend-row"><b>Fare source:</b> &nbsp;{bits}'
+            f' &nbsp;·&nbsp; a manager\'s decision applies for the rest of '
+            f'today and shows everywhere on this screen</div>')
+
+
 def advice_line(t):
     """One sentence saying what this row means and what to do about it."""
     gap, mv, dout, seats, spd = (t["gap"], t["move_pc"], t["dout"],
@@ -947,6 +983,8 @@ td.advice { color:#3a5080; font-size:0.72rem; line-height:1.5; }
 .insight .big { font-size:1.02rem; font-weight:700; color:#E91E8C; }
 .tab-intro { font-size:0.74rem; color:#7c8db5; margin:-0.2rem 0 0.9rem 0; }
 .kpi-strip.six { grid-template-columns:repeat(6,minmax(0,1fr)); }
+.fdot { display:inline-block; width:8px; height:8px; border-radius:50%;
+  margin-right:5px; vertical-align:middle; }
 .dl-up { color:#DC2626; font-weight:700; }
 .dl-dn { color:#16A34A; font-weight:700; }
 .dl-fl { color:#8095bd; }
@@ -1098,17 +1136,27 @@ def main():
             return None
 
     # ── SKUs already decided today drop out of the action list ──
-    decided_today = set()
+    decided_today, decided_fares = set(), {}
     if not feedback_df.empty and "Timestamp" in feedback_df.columns:
         fbt = feedback_df.copy()
         fbt["_ts"] = pd.to_datetime(fbt["Timestamp"], errors="coerce")
         fbt = fbt[(fbt["_ts"] >= today) &
                   (fbt.get("Manager Decision", pd.Series(dtype=str))
                    .isin(["Accepted", "Overridden"]))]
+        fbt = fbt.sort_values("_ts")
         for _, x in fbt.iterrows():
-            decided_today.add(sku_key(x.get("Flight No.", ""),
-                                      x.get("Cabin Class", ""),
-                                      x.get("Departure Date", "")))
+            k = sku_key(x.get("Flight No.", ""), x.get("Cabin Class", ""),
+                        x.get("Departure Date", ""))
+            decided_today.add(k)
+            try:
+                fv = int(round(float(x.get("Final Fare Used", 0))))
+            except Exception:
+                continue
+            if fv > 0:
+                decided_fares[k] = (
+                    fv,
+                    "manager" if x.get("Manager Decision") == "Overridden" else "ai",
+                    str(x.get("Manager Notes", "") or ""))
 
     # ── TRIAGE ROWS ──────────────────────────────────────────
     triage_rows = []
@@ -1134,8 +1182,10 @@ def main():
         pdlt = pace_delta_for(pace_curve, rt, cb, dout, lf)
         # Standard adult one-way. Which flights need attention is a fact about
         # the route, so it must not shift when someone changes the quote toggle.
-        fare, bdx = calc_fare(rt, cb, dout, lf, match["fare"] if match else 0,
-                              hol, deph(ftm), pace_delta=pdlt)
+        arith_f, bdx = calc_fare(rt, cb, dout, lf, match["fare"] if match else 0,
+                                 hol, deph(ftm), pace_delta=pdlt)
+        key = sku_key(raw, cb, dd)
+        fare, fsrc = effective_fare(decided_fares, key, arith_f)
 
         gap  = (fare - match["fare"]) / match["fare"] if (match and match["fare"]) else None
         risk = abs(fare - match["fare"]) * remaining if match else 0
@@ -1152,9 +1202,8 @@ def main():
             elif abs(gap) > 0.08 or (move_pc is not None and abs(move_pc) > 0.05):
                 flag = "amber"
 
-        key = sku_key(raw, cb, dd)
         triage_rows.append({
-            "key": key, "route": rt, "raw": raw, "flight": fno, "time": ftm,
+            "key": key, "arith": arith_f, "fsrc": fsrc, "route": rt, "raw": raw, "flight": fno, "time": ftm,
             "cabin": cb, "dep": dd, "dout": dout, "lf": lf, "sold": sold,
             "total": tot, "remaining": remaining, "fare": fare, "bd": bdx,
             "comp": match, "comp_rows": cm, "gap": gap, "move": move,
@@ -1169,7 +1218,8 @@ def main():
                sel_route=sel_route, sel_cabin=sel_cabin, sel_time=sel_time,
                sel_dates=sel_dates, pax_type=pax_type, trip_type=trip_type,
                analyst=analyst, triage_rows=triage_rows,
-               decided_today=decided_today, routes=routes, cabins=cabins)
+               decided_today=decided_today, decided_fares=decided_fares,
+               routes=routes, cabins=cabins)
 
     # ── HEADER ───────────────────────────────────────────────
     date_disp = " & ".join(dfmt(d) for d in sel_dates)
@@ -1296,6 +1346,8 @@ def render_dashboard(C):
                           f_match["fare"] if f_match else 0,
                           f_hol == "Yes", deph(f_time),
                           pax_type, trip_type, pace_delta=f_pace)
+    f_key = sku_key(f_raw_no, sel_cabin, f_date)
+    live_fare, live_src = effective_fare(C["decided_fares"], f_key, arith)
 
     spd_txt, spd_cls = fill_speed_words(f_pace)
     if f_match:
@@ -1311,9 +1363,13 @@ def render_dashboard(C):
         f'<b>{dfmt(f_date, "long")}</b>, {f_days} days from now. It is '
         f'<b>{round(f_lf*100)}% full</b> ({f_sold} of {f_total} seats sold, '
         f'{f_total - f_sold} left) and is <b>{spd_txt.lower()}</b> for this route '
-        f'at this stage. Our rules put the fare at '
-        f'<span class="big">{inr(arith)}</span>. {cmp_sentence}</div>',
-        unsafe_allow_html=True)
+        f'at this stage. '
+        + (f'Our rules put the fare at <span class="big">{inr(arith)}</span>. '
+           if live_src == "arith" else
+           f'The fare in force is <span class="big">{inr(live_fare)}</span> '
+           f'({FARE_SRC[live_src][1].lower()}, against {inr(arith)} from the '
+           f'rules). ')
+        + f'{cmp_sentence}</div>', unsafe_allow_html=True)
 
     ai_today, mgr_today = "—", "Not yet reviewed"
     if not ai_log_df.empty and "Flight No." in ai_log_df.columns:
@@ -1338,7 +1394,7 @@ def render_dashboard(C):
             ov_today = inr(m.iloc[-1].get("Final Fare Used", ""))
 
     cseat  = seat_cost(sel_route, sel_cabin)
-    p_seat = arith - cseat
+    p_seat = live_fare - cseat
     f_prof = p_seat * f_sold
 
     st.markdown(f"""
@@ -1352,9 +1408,11 @@ def render_dashboard(C):
         <div class="kpi-lbl">Selling speed</div>
         <div class="kpi-sub">vs normal for this route</div></div>
       <div class="kpi-card accent">
-        <div class="kpi-val k-mag">{inr(arith)}</div>
-        <div class="kpi-lbl">Our fare (rules)</div>
-        <div class="kpi-sub">{cabin_short(sel_cabin)} base {inr(bd['cabin_base'])}</div></div>
+        <div class="kpi-val" style="color:{FARE_SRC[live_src][0]}">
+          {fare_dot(live_src)}{inr(live_fare)}</div>
+        <div class="kpi-lbl">Fare in force now</div>
+        <div class="kpi-sub">{FARE_SRC[live_src][1]}
+          {'' if live_src == 'arith' else f' · rules said {inr(arith)}'}</div></div>
       <div class="kpi-card">
         <div class="kpi-val k-navy">{ai_today}</div>
         <div class="kpi-lbl">AI suggested</div>
@@ -1593,6 +1651,7 @@ def render_dashboard(C):
                     zr.append(None); tr.append(""); hr.append("No flight")
                     continue
                 lfs, fares, gaps, paces = [], [], [], []
+                cell_src = set()
                 for _, g in sub.iterrows():
                     ftm  = str(g.get("Departure Time", ""))
                     lf   = float(g.get("Load Factor", 0) or 0)
@@ -1607,6 +1666,11 @@ def render_dashboard(C):
                     fv, _ = calc_fare(rt, mx_cabin, dout, lf,
                                       mt["fare"] if mt else 0, hol, deph(ftm),
                                       pace_delta=pl)
+                    fv, fsrc_c = effective_fare(
+                        C["decided_fares"],
+                        sku_key(g.get("Flight No.", ""), mx_cabin, dd), fv)
+                    if fsrc_c != "arith":
+                        cell_src.add(fsrc_c)
                     lfs.append(lf); fares.append(fv)
                     if pl is not None:
                         paces.append(pl)
@@ -1644,7 +1708,12 @@ def render_dashboard(C):
                     zr.append(round(gap_m * 100, 1) if gap_m is not None else None)
                     tr.append(f"{gap_m*100:+.0f}%" if gap_m is not None else "")
 
+                if cell_src:
+                    tr[-1] = tr[-1] + ("*" if tr[-1] else "")
                 hr.append(
+                    ("<b>Priced today by "
+                     + (" and ".join(FARE_SRC[s][1].lower() for s in sorted(cell_src)))
+                     + "</b><br>" if cell_src else "") +
                     f"<b>{rt}</b><br>Departing {dfmt(dd, 'long')}<br>"
                     f"{len(sub)} flight{'s' if len(sub) != 1 else ''} · {mx_cabin}"
                     f"<br>─────────────<br>"
@@ -1741,8 +1810,11 @@ def render_dashboard(C):
                 "Red means we are dearer than the nearest rival departure, "
                 "blue means cheaper, white roughly level.",
         }[metric]
-        st.caption(note + "  Fares here are the standard adult one-way price, "
-                   "so they do not move with the passenger type in the sidebar.")
+        st.caption(note + "  Fares are the standard adult one-way price, so they "
+                   "do not move with the passenger type in the sidebar. A "
+                   "* marks a square where a fare was set today by the AI or a "
+                   "manager; hover it to see which.")
+        st.markdown(fare_legend(), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1806,6 +1878,8 @@ def render_dashboard(C):
                            mt["fare"] if mt else 0, hol == "Yes", deph(ftm),
                            pax_type, trip_type, pace_delta=pdl)
         dk  = dkey(dd)
+        rkey = sku_key(raw, sel_cabin, dd)
+        ar, rsrc = effective_fare(C["decided_fares"], rkey, ar)
         acc = acc_lookup.get((raw, sel_cabin, dk))
         rec = acc or log_lookup.get((raw, sel_cabin, dk))
         rcls = "f-ai" if acc else "f-ailog"
@@ -1829,7 +1903,9 @@ def render_dashboard(C):
               <span style="color:{GREY};font-size:0.66rem">{sold}/{tot}</span></td>
           <td><span class="{spd_c}" style="font-size:0.7rem">{spd_t}</span></td>
           <td class="num f-navy">{inr(cabin_base_disp)}</td>
-          <td class="num f-mag"><b>{inr(ar)}</b></td>
+          <td class="num"><b style="color:{FARE_SRC[rsrc][0]}">
+              {fare_dot(rsrc)}{inr(ar)}</b><br>
+              <span style="color:{GREY};font-size:0.63rem">{FARE_SRC[rsrc][1]}</span></td>
           <td class="num"><span class="{rcls}">{inr(rec) if rec else '—'}</span><br>
               <span style="color:{GREY};font-size:0.63rem">{rsub}</span></td>
           <td style="font-size:0.71rem">{comp_s}</td>
@@ -1843,6 +1919,7 @@ def render_dashboard(C):
       &nbsp;·&nbsp; <b>Closest rival</b> is the competitor departing nearest in
       time, not the cheapest of the day
     </div>""", unsafe_allow_html=True)
+    st.markdown(fare_legend(), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1983,6 +2060,15 @@ def render_dashboard(C):
             if rws:
                 frames.append(pd.DataFrame(rws))
 
+        # If a fare was set today, show it as its own point so the chart agrees
+        # with the KPI above rather than plotting only the untouched rules fare.
+        if live_src != "arith":
+            frames.append(pd.DataFrame([{
+                "Date": today,
+                "Series": ("IndiGo (manager set)" if live_src == "manager"
+                           else "IndiGo (AI accepted)"),
+                "Fare": live_fare}]))
+
         if not ai_log_df.empty and "Log Date" in ai_log_df.columns:
             al = ai_log_df.copy()
             al["_dk"] = al.get("Departure Date", pd.Series(dtype=str)).map(dkey)
@@ -2007,20 +2093,29 @@ def render_dashboard(C):
             allt["Date"] = pd.to_datetime(allt["Date"], errors="coerce")
             allt = allt.dropna(subset=["Date"]).sort_values("Date")
             fig2 = px.line(allt, x="Date", y="Fare", color="Series", markers=True,
-                           color_discrete_map={"Air India": SKY, "Akasa Air": RED,
-                                               "IndiGo (our rules)": MAGENTA,
-                                               "IndiGo (AI suggested)": NAVY})
+                           color_discrete_map={
+                               "Air India": SKY, "Akasa Air": RED,
+                               "IndiGo (our rules)": MAGENTA,
+                               "IndiGo (AI suggested)": NAVY,
+                               "IndiGo (AI accepted)": FARE_SRC["ai"][0],
+                               "IndiGo (manager set)": FARE_SRC["manager"][0]})
             for tr in fig2.data:
                 if tr.name.startswith("IndiGo"):
                     tr.line.dash = "dash"; tr.line.width = 2.5
+                if tr.name in ("IndiGo (AI accepted)", "IndiGo (manager set)"):
+                    tr.mode = "markers"
+                    tr.marker.size = 15
+                    tr.marker.symbol = "star"
             fig2.update_yaxes(title_text="Fare (₹)")
             fig2.update_xaxes(type="date", tickformat="%d-%m", title_text="",
                               range=[win_from, today])
             style_chart(fig2, height=340)
             st.plotly_chart(fig2, use_container_width=True)
-            st.caption(f"{win.lower()}, for this flight and cabin only. Rivals are "
-                       "limited to departures within three hours of ours. "
-                       "Dashed lines are IndiGo's own prices.")
+            st.caption(f"{win.lower()}, for this flight and cabin only. Rivals "
+                       "are limited to departures within three hours of ours. "
+                       "Dashed lines are IndiGo's own prices; a star marks a "
+                       "fare set today by the AI or a manager.")
+            st.markdown(fare_legend(), unsafe_allow_html=True)
         else:
             st.info("No price history in this period for this flight.")
 
@@ -2126,7 +2221,8 @@ def render_action_list(C):
           <td class="num"><span class="{lcls}">{dot} {round(t['lf']*100)}%</span><br>
               <span style="color:{GREY};font-size:0.66rem">{t['sold']}/{t['total']}</span></td>
           <td><span class="{spd_c}">{spd_t}</span></td>
-          <td class="num f-mag"><b>{inr(t['fare'])}</b></td>
+          <td class="num"><b style="color:{FARE_SRC[t['fsrc']][0]}">
+              {fare_dot(t['fsrc'])}{inr(t['fare'])}</b></td>
           <td style="font-size:0.71rem">{rival}</td>
           <td class="num"><span class="{gcls}">{gtxt}</span></td>
           <td class="num f-navy">{inr(t['risk'])}</td>
@@ -2142,6 +2238,7 @@ def render_action_list(C):
       moved over 5% &nbsp;·&nbsp;
       <b>Money at stake</b> = price difference × seats still unsold
     </div>""", unsafe_allow_html=True)
+    st.markdown(fare_legend(), unsafe_allow_html=True)
 
     # ── Price each one inline ────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
