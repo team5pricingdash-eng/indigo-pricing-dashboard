@@ -800,31 +800,40 @@ def main():
                 lf_hist["LF%"]=(lf_hist["Load Factor"]*100).round(1)
                 lf_hist["Seats Sold"]=pd.to_numeric(lf_hist["Seats Sold"],errors="coerce")
 
+                # Two separate charts stacked - avoids dual axis issues
                 fig=go.Figure()
-                # Bar for seats sold
                 fig.add_trace(go.Bar(
-                    x=lf_hist[dc],y=lf_hist["Seats Sold"],name="Seats Booked",
-                    marker_color="rgba(21,84,176,0.25)",yaxis="y",
-                    text=lf_hist["Seats Sold"].apply(lambda x: str(int(x)) if pd.notna(x) else ""),
-                    textposition="outside",textfont=dict(size=9,color="#1554b0")))
-                # Line for load factor
+                    x=lf_hist[dc], y=lf_hist["Seats Sold"],
+                    name="Seats Booked",
+                    marker_color="rgba(21,84,176,0.3)",
+                    text=lf_hist["Seats Sold"].apply(
+                        lambda x: str(int(x)) if pd.notna(x) else ""),
+                    textposition="outside",
+                    textfont=dict(size=9, color="#1554b0")
+                ))
                 fig.add_trace(go.Scatter(
-                    x=lf_hist[dc],y=lf_hist["LF%"],name="Load Factor %",
-                    mode="lines+markers",line=dict(color="#dc2626",width=2),
-                    marker=dict(size=6,color="#dc2626"),yaxis="y2"))
-                fig.add_hline(y=85,line_dash="dot",line_color="#dc2626",line_width=1,yref="y2")
-
+                    x=lf_hist[dc], y=lf_hist["LF%"],
+                    name="Load Factor %",
+                    mode="lines+markers",
+                    line=dict(color="#dc2626", width=2.5),
+                    marker=dict(size=7, color="#dc2626"),
+                    yaxis="y"
+                ))
+                max_val = max(
+                    lf_hist["Seats Sold"].max() if "Seats Sold" in lf_hist.columns else 180,
+                    lf_hist["LF%"].max() if "LF%" in lf_hist.columns else 100
+                )
                 fig.update_layout(
-                    **CHART,
-                    xaxis=dict(gridcolor="#f0f4f9",linecolor="#dce8f5",title="Booking Date",
-                               tickfont=dict(size=9)),
-                    yaxis=dict(title="Seats Booked",gridcolor="#f0f4f9",linecolor="#dce8f5",
-                               titlefont=dict(size=10)),
-                    yaxis2=dict(title="Load %",overlaying="y",side="right",range=[0,105],
-                                showgrid=False,titlefont=dict(size=10)),
-                    legend=dict(bgcolor="#fff",bordercolor="#dce8f5",font=dict(size=9),
-                                orientation="h",y=1.08),
-                    height=280,barmode="group"
+                    plot_bgcolor="#fff", paper_bgcolor="#fff",
+                    font=dict(color="#2a4060", family="DM Sans"),
+                    margin=dict(l=8, r=8, t=8, b=8),
+                    xaxis=dict(gridcolor="#f0f4f9", linecolor="#dce8f5",
+                               title="Booking Date", tickfont=dict(size=9)),
+                    yaxis=dict(gridcolor="#f0f4f9", linecolor="#dce8f5",
+                               range=[0, max_val * 1.2]),
+                    legend=dict(bgcolor="#fff", bordercolor="#dce8f5",
+                                font=dict(size=9), orientation="h", y=1.1),
+                    height=280
                 )
                 st.plotly_chart(fig,use_container_width=True)
                 st.caption(f"Showing how {lf_flt_sel} bookings grew over time as departure approached")
