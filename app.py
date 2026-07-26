@@ -862,8 +862,18 @@ def fill_speed_words(delta):
     return "About normal", "sp-norm"
 
 
-def sku_key(flight_raw, cabin, dep_date):
-    return f"{str(flight_raw)}|{str(cabin)}|{dkey(dep_date)}"
+def sku_key(route, flight_raw, dep_time, cabin, dep_date):
+    """Unique id for one flight, cabin and departure date.
+
+    Route and departure time are part of the key because several rows in the
+    sheet carry a blank or numeric flight number. Without them, two different
+    flights collapse to the same id and Streamlit rejects the duplicate
+    widget keys it generates from it.
+    """
+    parts = [str(route), str(flight_raw), str(dep_time), str(cabin),
+             dkey(dep_date)]
+    joined = "|".join(p.strip() for p in parts)
+    return "".join(ch if (ch.isalnum() or ch in "|-") else "_" for ch in joined)
 
 
 # Where a displayed fare came from. One colour per source, used everywhere.
@@ -1147,7 +1157,8 @@ def main():
                    .isin(["Accepted", "Overridden"]))]
         fbt = fbt.sort_values("_ts")
         for _, x in fbt.iterrows():
-            k = sku_key(x.get("Flight No.", ""), x.get("Cabin Class", ""),
+            k = sku_key(x.get("Route", ""), x.get("Flight No.", ""),
+                        x.get("Departure Time", ""), x.get("Cabin Class", ""),
                         x.get("Departure Date", ""))
             decided_today.add(k)
             try:
@@ -1186,7 +1197,7 @@ def main():
         # the route, so it must not shift when someone changes the quote toggle.
         arith_f, bdx = calc_fare(rt, cb, dout, lf, match["fare"] if match else 0,
                                  hol, deph(ftm), pace_delta=pdlt)
-        key = sku_key(raw, cb, dd)
+        key = sku_key(rt, raw, ftm, cb, dd)
         fare, fsrc = effective_fare(decided_fares, key, arith_f)
 
         gap  = (fare - match["fare"]) / match["fare"] if (match and match["fare"]) else None
@@ -1348,7 +1359,7 @@ def render_dashboard(C):
                           f_match["fare"] if f_match else 0,
                           f_hol == "Yes", deph(f_time),
                           pax_type, trip_type, pace_delta=f_pace)
-    f_key = sku_key(f_raw_no, sel_cabin, f_date)
+    f_key = sku_key(sel_route, f_raw_no, f_time, sel_cabin, f_date)
     live_fare, live_src = effective_fare(C["decided_fares"], f_key, arith)
 
     spd_txt, spd_cls = fill_speed_words(f_pace)
@@ -1670,7 +1681,8 @@ def render_dashboard(C):
                                       pace_delta=pl)
                     fv, fsrc_c = effective_fare(
                         C["decided_fares"],
-                        sku_key(g.get("Flight No.", ""), mx_cabin, dd), fv)
+                        sku_key(rt, g.get("Flight No.", ""),
+                                g.get("Departure Time", ""), mx_cabin, dd), fv)
                     if fsrc_c != "arith":
                         cell_src.add(fsrc_c)
                     lfs.append(lf); fares.append(fv)
@@ -1880,7 +1892,7 @@ def render_dashboard(C):
                            mt["fare"] if mt else 0, hol == "Yes", deph(ftm),
                            pax_type, trip_type, pace_delta=pdl)
         dk  = dkey(dd)
-        rkey = sku_key(raw, sel_cabin, dd)
+        rkey = sku_key(sel_route, raw, ftm, sel_cabin, dd)
         ar, rsrc = effective_fare(C["decided_fares"], rkey, ar)
         acc = acc_lookup.get((raw, sel_cabin, dk))
         rec = acc or log_lookup.get((raw, sel_cabin, dk))
