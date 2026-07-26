@@ -269,30 +269,6 @@ div[data-testid="metric-container"] [data-testid="metric-value"] { color:#1B2D6B
 .stTabs [aria-selected="true"] { color:#1B2D6B !important;
   border-bottom:2px solid #E91E8C !important; }
 .legend-row { font-size:0.58rem; color:#8095bd; margin-top:0.4rem; }
-
-/* ── Aliases + additions for v7 sections ── */
-.kpi-strip.six { grid-template-columns:repeat(6,minmax(0,1fr)); }
-.fare-tbl { width:100%; border-collapse:separate; border-spacing:0; font-size:0.72rem;
-  border:1px solid #dde3f0; border-radius:10px; overflow:hidden;
-  table-layout:fixed; background:#fff; }
-.fare-tbl thead tr { background:#f2f5fc; }
-.fare-tbl th { padding:0.48rem 0.5rem; font-size:0.56rem; font-weight:700;
-  letter-spacing:0.07em; text-transform:uppercase; color:#1B2D6B;
-  border-bottom:2px solid #dde3f0; text-align:left;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.fare-tbl td { padding:0.42rem 0.5rem; border-bottom:1px solid #f2f5fc; color:#2a4060;
-  font-family:'DM Mono',monospace; font-size:0.7rem;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.fare-tbl tr:last-child td { border-bottom:none; }
-.fare-tbl tbody tr:hover td { background:#fafbff; }
-.date-sep td { background:#eaf0fb !important; color:#1B2D6B !important;
-  font-family:'DM Sans',sans-serif !important; font-weight:700 !important;
-  font-size:0.7rem !important; padding:0.32rem 0.55rem !important;
-  border-top:2px solid #c9d6f0 !important; }
-.dl-up { color:#DC2626; font-weight:700; }
-.dl-dn { color:#16A34A; font-weight:700; }
-.dl-fl { color:#8095bd; }
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -840,6 +816,125 @@ def call_llm(prompt_args, bd, arithmetic_fare, comp_match, load_factor):
         errors.append(f"{names[prov]} — {err}")
     rat = fallback_rationale(bd, arithmetic_fare, comp_match, load_factor)
     return "Approve", arithmetic_fare, rat, "Rules-based fallback", "; ".join(errors)
+
+# ═════════════════════════════════════════════════════════════
+# DISPLAY HELPERS — dates always dd-mm-yyyy, no jargon anywhere
+# ═════════════════════════════════════════════════════════════
+def dfmt(v, style="short"):
+    """Every date shown anywhere goes through here. dd-mm-yyyy, always."""
+    try:
+        t = pd.to_datetime(v, errors="coerce")
+        if pd.isna(t):
+            return str(v)[:10]
+        if style == "long":
+            return t.strftime("%A, %d-%m-%Y")
+        if style == "day":
+            return t.strftime("%d-%m")
+        return t.strftime("%d-%m-%Y")
+    except Exception:
+        return str(v)[:10]
+
+
+def fno_disp(v, dep_time=""):
+    """Flight number for display. Some rows carry a blank or numeric flight
+    number; fall back to departure time rather than showing '0.0'."""
+    s = str(v).strip()
+    if s in ("", "nan", "None", "0", "0.0") or s.replace(".", "").isdigit():
+        return f"dep {dep_time}" if dep_time else "—"
+    return s
+
+
+def cabin_short(c):
+    return {"Premium Economy": "Prem Econ"}.get(str(c), str(c))
+
+
+def fill_speed_words(delta):
+    """Plain English for how fast a flight is filling versus its own norm.
+    Avoids the words 'pace' and 'load factor' entirely."""
+    if delta is None or (isinstance(delta, float) and pd.isna(delta)):
+        return "No history yet", "sp-none"
+    if delta >= 0.10:  return "Much faster than usual", "sp-fast"
+    if delta >= 0.05:  return "Faster than usual", "sp-fast"
+    if delta <= -0.10: return "Much slower than usual", "sp-slow"
+    if delta <= -0.05: return "Slower than usual", "sp-slow"
+    return "About normal", "sp-norm"
+
+
+def advice_line(t):
+    """One sentence saying what this row means and what to do about it."""
+    gap, mv, dout, seats, spd = (t["gap"], t["move_pc"], t["dout"],
+                                 t["remaining"], t["pace"])
+    if gap is None:
+        return "No competitor flight at a similar time — price on demand alone."
+
+    if   gap >  0.15: head = f"We are {gap*100:.0f}% dearer than the closest rival flight"
+    elif gap >  0.08: head = f"We are {gap*100:.0f}% above the closest rival flight"
+    elif gap < -0.15: head = f"We are {abs(gap)*100:.0f}% cheaper than the closest rival flight"
+    elif gap < -0.08: head = f"We are {abs(gap)*100:.0f}% below the closest rival flight"
+    else:             head = "Priced in line with the closest rival flight"
+
+    parts = [head]
+    if mv is not None and abs(mv) > 0.05:
+        parts.append(f"who changed price {abs(mv)*100:.0f}% since yesterday")
+    if spd is not None and spd <= -0.05:
+        parts.append(f"and this flight is selling slower than usual "
+                     f"— {seats} seats still unsold with {dout} days left")
+    elif spd is not None and spd >= 0.05:
+        parts.append(f"and it is selling faster than usual — only {seats} seats left")
+    else:
+        parts.append(f"with {seats} seats unsold and {dout} days left")
+
+    s = ", ".join(parts) + "."
+    if t["flag"] == "red":
+        if   gap >  0.08: s += " Cut the fare to win back bookings."
+        elif gap < -0.08: s += " Room to raise the fare and still lead on price."
+        else:             s += " Review this one today."
+    elif t["flag"] == "amber":
+        s += " Keep an eye on it."
+    return s
+
+
+st.markdown("""
+<style>
+.stTabs [data-baseweb="tab-list"] { gap:0.35rem; border-bottom:2px solid #dde3f0; }
+.stTabs [data-baseweb="tab"] { height:2.6rem; padding:0 1.15rem; background:#eef2fa;
+  border-radius:9px 9px 0 0; font-size:0.82rem; font-weight:600; color:#5a6f9c; }
+.stTabs [aria-selected="true"] { background:#1B2D6B !important; color:#fff !important; }
+
+table.wrap { width:100%; border-collapse:separate; border-spacing:0; font-size:0.75rem;
+  border:1px solid #dde3f0; border-radius:10px; overflow:hidden; background:#fff; }
+table.wrap thead tr { background:#f2f5fc; }
+table.wrap th { padding:0.55rem 0.6rem; font-size:0.57rem; font-weight:700;
+  letter-spacing:0.07em; text-transform:uppercase; color:#1B2D6B;
+  border-bottom:2px solid #dde3f0; text-align:left; }
+table.wrap td { padding:0.55rem 0.6rem; border-bottom:1px solid #f2f5fc;
+  color:#2a4060; font-size:0.74rem; vertical-align:top; white-space:normal; }
+table.wrap tr:last-child td { border-bottom:none; }
+table.wrap tbody tr:hover td { background:#fafbff; }
+td.num { font-family:'DM Mono',monospace; white-space:nowrap; }
+td.advice { color:#3a5080; font-size:0.72rem; line-height:1.5; }
+.sp-fast { color:#16A34A; font-weight:600; }
+.sp-slow { color:#DC2626; font-weight:600; }
+.sp-norm { color:#8095bd; }
+.sp-none { color:#c3cde3; font-style:italic; }
+.insight { background:#f4f7ff; border-left:4px solid #E91E8C;
+  border-radius:0 9px 9px 0; padding:0.8rem 1.05rem; font-size:0.86rem;
+  color:#26365e; line-height:1.7; margin-bottom:0.9rem; }
+.insight b { color:#1B2D6B; }
+.insight .big { font-size:1.02rem; font-weight:700; color:#E91E8C; }
+.tab-intro { font-size:0.74rem; color:#7c8db5; margin:-0.2rem 0 0.9rem 0; }
+
+.kpi-strip.six { grid-template-columns:repeat(6,minmax(0,1fr)); }
+.dl-up { color:#DC2626; font-weight:700; }
+.dl-dn { color:#16A34A; font-weight:700; }
+.dl-fl { color:#8095bd; }
+tr.date-sep td { background:#eaf0fb !important; color:#1B2D6B !important;
+  font-weight:700 !important; font-size:0.72rem !important;
+  padding:0.35rem 0.6rem !important; border-top:2px solid #c9d6f0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
 # ═════════════════════════════════════════════════════════════
 # MAIN
 # ═════════════════════════════════════════════════════════════
@@ -849,7 +944,7 @@ def main():
     except Exception as e:
         st.error(f"Could not connect to Google Sheets: {e}")
         st.info("Check GOOGLE_SHEET_NAME and [gcp_service_account] in Streamlit "
-                "Secrets, and that the sheet is shared with the service account email.")
+                "Secrets, and that the sheet is shared with the service account.")
         return
 
     feedback_df = load_tab(FEEDBACK_TAB, ("Timestamp",))
@@ -859,16 +954,13 @@ def main():
     today = pd.Timestamp.today().normalize()
     dmin, dmax = today - timedelta(days=30), today + timedelta(days=90)
     dcol = "Date" if "Date" in indigo_df.columns else "Scrape Date"
-
     pace_curve = booking_pace_curve(indigo_df)
 
-    # Standing strategy lookup: route -> direction
     standing = {}
     if not strategy_df.empty and "Route" in strategy_df.columns:
         for _, s in strategy_df.iterrows():
             standing[str(s.get("Route", ""))] = str(s.get("Strategic Direction", ""))
 
-    # A triage jump can pre-set the sidebar widgets before they are created
     if "jump_route" in st.session_state:
         st.session_state["route_sel"] = st.session_state.pop("jump_route")
         st.session_state["cabin_sel"] = st.session_state.pop("jump_cabin")
@@ -880,7 +972,8 @@ def main():
                     '<span style="color:#E91E8C;font-weight:800">6E</span>'
                     '&nbsp; IndiGo · Pricing Intelligence</div>', unsafe_allow_html=True)
 
-        analyst = st.text_input("Analyst name", value=st.session_state.get("analyst", ""),
+        analyst = st.text_input("Analyst name",
+                                value=st.session_state.get("analyst", ""),
                                 placeholder="Who is making decisions?")
         st.session_state["analyst"] = analyst
 
@@ -905,7 +998,8 @@ def main():
                     unsafe_allow_html=True)
         d1 = st.date_input("Departure", value=today.date(),
                            min_value=dmin.date(), max_value=dmax.date(),
-                           label_visibility="collapsed", key="d1")
+                           label_visibility="collapsed", key="d1",
+                           format="DD-MM-YYYY")
 
         if trip_type == "Round Trip":
             st.markdown('<p style="color:#1B2D6B;font-size:0.62rem;font-weight:700;'
@@ -914,7 +1008,8 @@ def main():
                         unsafe_allow_html=True)
             d2 = st.date_input("Return", value=(today + timedelta(days=7)).date(),
                                min_value=dmin.date(), max_value=dmax.date(),
-                               label_visibility="collapsed", key="d2")
+                               label_visibility="collapsed", key="d2",
+                               format="DD-MM-YYYY")
             sel_dates = sorted({pd.Timestamp(d1), pd.Timestamp(d2)})
         else:
             sel_dates = [pd.Timestamp(d1)]
@@ -933,7 +1028,7 @@ def main():
             st.warning(f"{active} key missing in Secrets. "
                        "Pricing will use the arithmetic rules only.")
 
-    # ── SNAPSHOT OF LATEST STATE PER SKU (all routes/cabins) ─
+    # ── LATEST STATE PER SKU ─────────────────────────────────
     snap_all = indigo_df[indigo_df["Departure Date"].isin(sel_dates)].copy()
     if not snap_all.empty and dcol in snap_all.columns:
         snap_all = (snap_all.sort_values(dcol)
@@ -941,39 +1036,28 @@ def main():
                              as_index=False).last())
 
     comp_all = comp_df[comp_df["Departure Date"].isin(sel_dates)].copy()
-    comp_latest = pd.DataFrame()
-    comp_prev   = pd.DataFrame()
+    comp_latest, comp_prev = pd.DataFrame(), pd.DataFrame()
     if not comp_all.empty and "Scrape Date" in comp_all.columns:
+        gk = ["Airline", "Flight No.", "Route", "Cabin Class", "Departure Date"]
         comp_latest = (comp_all.sort_values("Scrape Date")
-                       .groupby(["Airline", "Flight No.", "Route", "Cabin Class",
-                                 "Departure Date"], as_index=False).last())
-        # Previous scrape, for overnight movement
-        prev_pool = comp_all.merge(
-            comp_latest[["Airline", "Flight No.", "Route", "Cabin Class",
-                         "Departure Date", "Scrape Date"]]
-            .rename(columns={"Scrape Date": "_latest"}),
-            on=["Airline", "Flight No.", "Route", "Cabin Class", "Departure Date"],
-            how="left")
-        prev_pool = prev_pool[prev_pool["Scrape Date"] < prev_pool["_latest"]]
-        if not prev_pool.empty:
-            comp_prev = (prev_pool.sort_values("Scrape Date")
-                         .groupby(["Airline", "Flight No.", "Route", "Cabin Class",
-                                   "Departure Date"], as_index=False).last())
+                       .groupby(gk, as_index=False).last())
+        pool = comp_all.merge(
+            comp_latest[gk + ["Scrape Date"]].rename(
+                columns={"Scrape Date": "_latest"}), on=gk, how="left")
+        pool = pool[pool["Scrape Date"] < pool["_latest"]]
+        if not pool.empty:
+            comp_prev = (pool.sort_values("Scrape Date")
+                         .groupby(gk, as_index=False).last())
 
     def overnight_move(airline, flight, route, cabin, dep_date):
-        """Latest minus previous scrape fare for one competitor flight."""
         if comp_latest.empty or comp_prev.empty:
             return None
-        cur = comp_latest[(comp_latest["Airline"] == airline) &
-                          (comp_latest["Flight No."].astype(str) == str(flight)) &
-                          (comp_latest["Route"] == route) &
-                          (comp_latest["Cabin Class"] == cabin) &
-                          (comp_latest["Departure Date"] == dep_date)]
-        prv = comp_prev[(comp_prev["Airline"] == airline) &
-                        (comp_prev["Flight No."].astype(str) == str(flight)) &
-                        (comp_prev["Route"] == route) &
-                        (comp_prev["Cabin Class"] == cabin) &
-                        (comp_prev["Departure Date"] == dep_date)]
+        def pick(df):
+            return df[(df["Airline"] == airline) &
+                      (df["Flight No."].astype(str) == str(flight)) &
+                      (df["Route"] == route) & (df["Cabin Class"] == cabin) &
+                      (df["Departure Date"] == dep_date)]
+        cur, prv = pick(comp_latest), pick(comp_prev)
         if cur.empty or prv.empty:
             return None
         try:
@@ -981,12 +1065,69 @@ def main():
         except Exception:
             return None
 
+    # ── TRIAGE ROWS ──────────────────────────────────────────
+    triage_rows = []
+    for _, r in snap_all.iterrows():
+        rt, cb, dd = str(r["Route"]), str(r["Cabin Class"]), r["Departure Date"]
+        ftm  = str(r.get("Departure Time", ""))
+        fno  = fno_disp(r.get("Flight No.", ""), ftm)
+        lf   = float(r.get("Load Factor", 0) or 0)
+        tot  = int(r.get("Total Seats", TOTAL_SEATS_MAP.get(rt, 180)) or 180)
+        sold = int(r.get("Seats Sold", 0) or 0)
+        if sold <= 0 and lf > 0:
+            sold = int(round(lf * tot))
+        remaining = max(tot - sold, 0)
+        dout = int(r.get("Days to Departure", 30) or 30)
+        hol  = str(r.get("Holiday / Festival", "No")) == "Yes"
+
+        cm = comp_latest[(comp_latest["Route"] == rt) &
+                         (comp_latest["Cabin Class"] == cb) &
+                         (comp_latest["Departure Date"] == dd)] \
+             if not comp_latest.empty else pd.DataFrame()
+        match = match_competitor(cm, deph(ftm))
+
+        pdlt = pace_delta_for(pace_curve, rt, cb, dout, lf)
+        fare, _bd = calc_fare(rt, cb, dout, lf, match["fare"] if match else 0,
+                              hol, deph(ftm), pace_delta=pdlt)
+
+        gap  = (fare - match["fare"]) / match["fare"] if (match and match["fare"]) else None
+        risk = abs(fare - match["fare"]) * remaining if match else 0
+        move = overnight_move(match["airline"], match["flight"], rt, cb, dd) \
+               if match else None
+        move_pc = (move / match["fare"]) if (move is not None and match
+                                             and match["fare"]) else None
+
+        flag = "green"
+        if gap is not None:
+            if (abs(gap) > 0.15 and dout <= 7) or \
+               (move_pc is not None and abs(move_pc) > 0.10):
+                flag = "red"
+            elif abs(gap) > 0.08 or (move_pc is not None and abs(move_pc) > 0.05):
+                flag = "amber"
+
+        triage_rows.append({
+            "route": rt, "flight": fno, "time": ftm, "cabin": cb, "dep": dd,
+            "dout": dout, "lf": lf, "sold": sold, "total": tot,
+            "remaining": remaining, "fare": fare, "comp": match, "gap": gap,
+            "move": move, "move_pc": move_pc, "risk": risk, "flag": flag,
+            "pace": pdlt})
+    triage_rows.sort(key=lambda x: -x["risk"])
+
+    ctx = dict(comp_df=comp_df, indigo_df=indigo_df, feedback_df=feedback_df,
+               ai_log_df=ai_log_df, snap_all=snap_all, comp_latest=comp_latest,
+               pace_curve=pace_curve, standing=standing, today=today,
+               dmin=dmin, dmax=dmax, dcol=dcol, sel_route=sel_route,
+               sel_cabin=sel_cabin, sel_time=sel_time, sel_dates=sel_dates,
+               pax_type=pax_type, trip_type=trip_type, analyst=analyst,
+               triage_rows=triage_rows)
+
     # ── HEADER ───────────────────────────────────────────────
-    date_disp = " & ".join(d.strftime("%d %b %Y") for d in sel_dates)
-    n_skus = len(snap_all)
-    n_dec_today = 0
+    date_disp = " & ".join(dfmt(d) for d in sel_dates)
+    n_today = 0
     if not ai_log_df.empty and "Log Date" in ai_log_df.columns:
-        n_dec_today = int((ai_log_df["Log Date"] >= today).sum())
+        n_today = int((pd.to_datetime(ai_log_df["Log Date"], errors="coerce")
+                       >= today).sum())
+    sh, sm = divmod(n_today * MANUAL_MINUTES_PER_SKU, 60)
 
     st.markdown(f"""
     <div class="pid-hdr">
@@ -994,215 +1135,234 @@ def main():
         <div class="pid-title">
           <span style="color:#ffd9ee;font-weight:800">6E</span>
           &nbsp;IndiGo Pricing Intelligence</div>
-        <div class="pid-sub">Real-time fare monitor · AI recommendation engine · ISB ALP 2026</div>
+        <div class="pid-sub">Competitor fare monitor · AI pricing adviser · ISB ALP 2026</div>
       </div>
       <div class="pid-ctx">
-        <div>
-          <div class="pid-ctx-val">{date_disp}</div>
-          <div class="pid-ctx-lbl">Departure</div>
-        </div>
+        <div><div class="pid-ctx-val">{date_disp}</div>
+             <div class="pid-ctx-lbl">Flights departing</div></div>
         <div class="pid-div"></div>
-        <div>
-          <div class="pid-ctx-val">{n_skus}</div>
-          <div class="pid-ctx-lbl">SKUs tracked</div>
-        </div>
+        <div><div class="pid-ctx-val">{len(snap_all)}</div>
+             <div class="pid-ctx-lbl">Fares tracked</div></div>
         <div class="pid-div"></div>
-        <div>
-          <div class="pid-ctx-val">{n_dec_today}</div>
-          <div class="pid-ctx-lbl">AI calls today</div>
-        </div>
+        <div><div class="pid-ctx-val">{n_today}</div>
+             <div class="pid-ctx-lbl">AI reviews today</div></div>
         <div class="pid-div"></div>
-        <div>
-          <div class="pid-ctx-val">{n_dec_today * MANUAL_MINUTES_PER_SKU // 60}h
-            {n_dec_today * MANUAL_MINUTES_PER_SKU % 60}m</div>
-          <div class="pid-ctx-lbl">Analyst time saved</div>
-        </div>
+        <div><div class="pid-ctx-val">{sh}h {sm}m</div>
+             <div class="pid-ctx-lbl">Analyst time saved</div></div>
         <div class="live-pill"><div class="live-dot"></div>LIVE</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ══════════ 0 · TRIAGE — EVERY SKU, RANKED BY REVENUE AT RISK ══════════
-    st.markdown('<div class="sec-hd">Today\'s exceptions — every SKU ranked by '
-                'revenue at risk</div>', unsafe_allow_html=True)
-
-    triage_rows = []
-    if not snap_all.empty:
-        for _, r in snap_all.iterrows():
-            rt, fno = str(r["Route"]), str(r["Flight No."])
-            cb, dd  = str(r["Cabin Class"]), r["Departure Date"]
-            ftm     = str(r.get("Departure Time", ""))
-            lf      = float(r.get("Load Factor", 0) or 0)
-            tot     = int(r.get("Total Seats", TOTAL_SEATS_MAP.get(rt, 180)) or 180)
-            sold    = int(r.get("Seats Sold", 0) or 0)
-            if sold <= 0 and lf > 0:
-                sold = int(round(lf * tot))
-            remaining = max(tot - sold, 0)
-            dout = int(r.get("Days to Departure", 30) or 30)
-            hol  = str(r.get("Holiday / Festival", "No")) == "Yes"
-
-            cm_rows = comp_latest[(comp_latest["Route"] == rt) &
-                                  (comp_latest["Cabin Class"] == cb) &
-                                  (comp_latest["Departure Date"] == dd)] \
-                      if not comp_latest.empty else pd.DataFrame()
-            match = match_competitor(cm_rows, deph(ftm))
-
-            pdlt = pace_delta_for(pace_curve, rt, cb, dout, lf)
-            fare, bd = calc_fare(rt, cb, dout, lf, match["fare"] if match else 0,
-                                 hol, deph(ftm), pace_delta=pdlt)
-
-            gap = None
-            if match and match["fare"]:
-                gap = (fare - match["fare"]) / match["fare"]
-            risk = abs(fare - match["fare"]) * remaining if match else 0
-
-            move = overnight_move(match["airline"], match["flight"], rt, cb, dd) \
-                   if match else None
-            move_pc = (move / match["fare"]) if (move is not None and match
-                                                 and match["fare"]) else None
-
-            flag = "green"
-            if gap is not None:
-                if (abs(gap) > 0.15 and dout <= 7) or \
-                   (move_pc is not None and abs(move_pc) > 0.10):
-                    flag = "red"
-                elif abs(gap) > 0.08 or \
-                     (move_pc is not None and abs(move_pc) > 0.05):
-                    flag = "amber"
-
-            triage_rows.append({
-                "route": rt, "flight": fno, "time": ftm, "cabin": cb,
-                "dep": dd, "dout": dout, "lf": lf, "remaining": remaining,
-                "fare": fare, "comp": match, "gap": gap, "move": move,
-                "move_pc": move_pc, "risk": risk, "flag": flag,
-                "pace": pdlt,
-            })
-
-    if not triage_rows:
-        st.info("No SKUs found for the selected departure date. Pick a date "
-                "covered by your data.")
+    if snap_all.empty:
+        st.info("No flights found for the selected departure date. "
+                "Pick a date covered by your data.")
         return
 
-    triage_rows.sort(key=lambda x: -x["risk"])
-    n_red   = sum(1 for t in triage_rows if t["flag"] == "red")
-    n_amber = sum(1 for t in triage_rows if t["flag"] == "amber")
+    t1, t2, t3, t4 = st.tabs(["🚩  What needs attention",
+                              "📊  Flight dashboard",
+                              "🕘  Decision history",
+                              "💰  Business case"])
+    with t1: render_action_list(ctx)
+    with t2: render_dashboard(ctx)
+    with t3: render_history(ctx)
+    with t4: render_business_case(ctx)
 
+
+# ═════════════════════════════════════════════════════════════
+# TAB 1 — WHAT NEEDS ATTENTION
+# ═════════════════════════════════════════════════════════════
+def render_action_list(C):
+    rows = C["triage_rows"]
+    if not rows:
+        st.info("Nothing to show for this departure date.")
+        return
+
+    red   = [t for t in rows if t["flag"] == "red"]
+    amber = [t for t in rows if t["flag"] == "amber"]
+    green = [t for t in rows if t["flag"] == "green"]
+
+    st.markdown('<div class="tab-intro">Every fare we track for the selected '
+                'departure date, sorted by how much money is at stake. '
+                'Start at the top.</div>', unsafe_allow_html=True)
+
+    # ── Insight paragraph, written in words before any numbers ──
+    if red:
+        top = red[0]
+    elif amber:
+        top = amber[0]
+    else:
+        top = rows[0]
+
+    if top["comp"]:
+        direction = "more expensive than" if (top["gap"] or 0) > 0 else "cheaper than"
+        head = (f'The one to look at first is <b>{top["route"]}</b>, '
+                f'{top["flight"]} at {top["time"]}, {cabin_short(top["cabin"])}. '
+                f'Our fare of <b>{inr(top["fare"])}</b> is '
+                f'<b>{abs(top["gap"] or 0)*100:.0f}% {direction}</b> '
+                f'{top["comp"]["airline"]} at {top["comp"]["time"]} '
+                f'({inr(top["comp"]["fare"])}), and '
+                f'<b>{top["remaining"]} seats</b> are still unsold with '
+                f'{top["dout"]} days to go. That is '
+                f'<span class="big">{inr(top["risk"])}</span> of revenue riding '
+                f'on getting this one price right.')
+    else:
+        head = (f'Top of the list is <b>{top["route"]}</b> {top["flight"]}, but no '
+                f'competitor flight departs at a similar time, so price it on '
+                f'demand alone.')
+
+    movers = [t for t in rows if t["move_pc"] is not None and abs(t["move_pc"]) > 0.05]
+    mv_txt = ""
+    if movers:
+        m = max(movers, key=lambda x: abs(x["move_pc"]))
+        mv_txt = (f' Overnight, {len(movers)} rival fares moved by more than 5% — '
+                  f'the biggest was {m["comp"]["airline"]} on {m["route"]}, '
+                  f'{"up" if m["move"] > 0 else "down"} {inr(abs(m["move"]))}.')
+
+    total_risk = sum(t["risk"] for t in (red + amber))
     st.markdown(
-        f'<div style="font-size:0.72rem;color:#3a5080;margin-bottom:0.5rem;">'
-        f'<span style="color:{RED};font-weight:700">{n_red} need action</span>'
-        f' &nbsp;·&nbsp; <span style="color:{AMBER};font-weight:700">{n_amber} to watch</span>'
-        f' &nbsp;·&nbsp; {len(triage_rows) - n_red - n_amber} priced sensibly'
-        f' &nbsp;·&nbsp; sorted by money at stake (fare gap × unsold seats)</div>',
-        unsafe_allow_html=True)
+        f'<div class="insight">'
+        f'<b>{len(red)} fares need action today</b> and {len(amber)} are worth '
+        f'watching; {len(green)} are priced sensibly. {head}{mv_txt} '
+        f'Across everything flagged, <b>{inr(total_risk)}</b> of revenue is '
+        f'exposed to being priced wrong.'
+        f'</div>', unsafe_allow_html=True)
 
-    thtml = ("""<table class="fare-tbl"><colgroup>
-    <col style="width:4%"><col style="width:15%"><col style="width:11%">
-    <col style="width:10%"><col style="width:7%"><col style="width:8%">
-    <col style="width:9%"><col style="width:12%"><col style="width:8%">
-    <col style="width:8%"><col style="width:8%"></colgroup>
-    <thead><tr>
-      <th></th><th>Route</th><th>Flight</th><th>Cabin</th><th>Load</th>
-      <th>Pace</th><th>Our fare</th><th>Nearest competitor</th><th>Gap</th>
-      <th>Overnight</th><th>At stake</th>
+    f1, f2 = st.columns([1, 3])
+    with f1:
+        only = st.radio("Show", ["Needs action", "Everything"],
+                        horizontal=True, key="tri_filter")
+    show_rows = (red + amber) if only == "Needs action" else rows
+    if not show_rows:
+        st.success("Nothing flagged — every fare is within range of its "
+                   "closest competitor.")
+        return
+
+    html = ("""<table class="wrap"><colgroup>
+    <col style="width:3%"><col style="width:16%"><col style="width:9%">
+    <col style="width:11%"><col style="width:9%"><col style="width:15%">
+    <col style="width:7%"><col style="width:9%"><col style="width:21%">
+    </colgroup><thead><tr>
+      <th></th><th>Flight</th><th>How full</th><th>Selling speed</th>
+      <th>Our fare</th><th>Closest rival flight</th><th>Difference</th>
+      <th>Money at stake</th><th>What this means</th>
     </tr></thead><tbody>""")
 
-    for t in triage_rows:
-        c, dot = lf_cls(t["lf"])
+    for t in show_rows:
         fcls = {"red": "flag-red", "amber": "flag-amber", "green": "flag-green"}[t["flag"]]
         rowc = {"red": "row-red", "amber": "row-amber", "green": ""}[t["flag"]]
-        gap_s = pct(t["gap"]) if t["gap"] is not None else "—"
-        gap_c = ("f-exp" if t["gap"] is not None and t["gap"] > 0.03
-                 else "f-cheap" if t["gap"] is not None and t["gap"] < -0.03
-                 else "f-sim")
-        comp_s = (f'{t["comp"]["airline"]} {t["comp"]["time"]} '
-                  f'{inr(t["comp"]["fare"])}' if t["comp"] else "—")
-        if t["move"] is None:
-            mv_s, mv_c = "—", ""
-        elif t["move"] > 0:
-            mv_s, mv_c = f'▲ {inr(t["move"])}', "dl-up"
-        elif t["move"] < 0:
-            mv_s, mv_c = f'▼ {inr(abs(t["move"]))}', "dl-dn"
-        else:
-            mv_s, mv_c = "· 0", "dl-fl"
-        pace_s = ("—" if t["pace"] is None else
-                  f'{"+" if t["pace"] >= 0 else ""}{t["pace"]*100:.0f}pt')
-        pace_c = ("f-cheap" if t["pace"] is not None and t["pace"] >= 0.02
-                  else "f-exp" if t["pace"] is not None and t["pace"] <= -0.05
-                  else "f-sim")
+        lcls, dot = lf_cls(t["lf"])
+        spd_txt, spd_cls = fill_speed_words(t["pace"])
 
-        thtml += f"""<tr class="{rowc}">
+        if t["comp"]:
+            rival = (f'{t["comp"]["airline"]}<br>'
+                     f'<span style="color:{GREY}">{t["comp"]["time"]} · '
+                     f'{inr(t["comp"]["fare"])}</span>')
+            g = t["gap"]
+            gtxt = f'{"+" if g > 0 else ""}{g*100:.0f}%'
+            gcls = "f-exp" if g > 0.03 else ("f-cheap" if g < -0.03 else "f-sim")
+            if t["move"] is not None and abs(t["move"]) >= 1:
+                arrow = "▲" if t["move"] > 0 else "▼"
+                acls  = "dl-up" if t["move"] > 0 else "dl-dn"
+                rival += (f'<br><span class="{acls}" style="font-size:0.66rem">'
+                          f'{arrow} {inr(abs(t["move"]))} since yesterday</span>')
+        else:
+            rival, gtxt, gcls = "—", "—", ""
+
+        html += f"""<tr class="{rowc}">
           <td><span class="{fcls}">●</span></td>
-          <td class="f-navy">{t['route'].replace(' to ',' → ')}</td>
-          <td>{t['flight']} {t['time']}</td>
-          <td style="color:{GREY}">{t['cabin']}</td>
-          <td><span class="{c}">{dot} {round(t['lf']*100)}%</span></td>
-          <td><span class="{pace_c}">{pace_s}</span></td>
-          <td class="f-mag">{inr(t['fare'])}</td>
-          <td style="color:{GREY};font-size:0.67rem">{comp_s}</td>
-          <td><span class="{gap_c}">{gap_s}</span></td>
-          <td><span class="{mv_c}">{mv_s}</span></td>
-          <td class="f-navy">{inr(t['risk'])}</td>
+          <td><b class="f-navy">{t['route'].replace(' to ',' → ')}</b><br>
+              <span style="color:{GREY};font-size:0.7rem">{t['flight']} ·
+              {t['time']} · {cabin_short(t['cabin'])}</span></td>
+          <td class="num"><span class="{lcls}">{dot} {round(t['lf']*100)}%</span><br>
+              <span style="color:{GREY};font-size:0.66rem">{t['sold']}/{t['total']}</span></td>
+          <td><span class="{spd_cls}">{spd_txt}</span></td>
+          <td class="num f-mag"><b>{inr(t['fare'])}</b></td>
+          <td style="font-size:0.71rem">{rival}</td>
+          <td class="num"><span class="{gcls}">{gtxt}</span></td>
+          <td class="num f-navy">{inr(t['risk'])}</td>
+          <td class="advice">{advice_line(t)}</td>
         </tr>"""
-    thtml += "</tbody></table>"
-    st.markdown(thtml, unsafe_allow_html=True)
+    html += "</tbody></table>"
+    st.markdown(html, unsafe_allow_html=True)
+
     st.markdown(f"""<div class="legend-row">
-      <span style="color:{RED}">●</span> Act now: &gt;15% off market with ≤7 days
-      left, or competitor moved &gt;10% overnight &nbsp;
-      <span style="color:{AMBER}">●</span> Watch: &gt;8% gap or &gt;5% overnight move &nbsp;
-      <span style="color:{GREEN}">●</span> Priced sensibly &nbsp;·&nbsp;
-      Pace = load factor vs this route's own historical curve at the same
-      days-out &nbsp;·&nbsp; At stake = fare gap × unsold seats
+      <span style="color:{RED}">●</span> <b>Needs action</b> — more than 15% away
+      from the closest rival with a week or less to departure, or that rival
+      changed price more than 10% overnight &nbsp;·&nbsp;
+      <span style="color:{AMBER}">●</span> <b>Watch</b> — more than 8% away, or
+      rival moved more than 5% &nbsp;·&nbsp;
+      <span style="color:{GREEN}">●</span> <b>Fine</b> — priced in line<br>
+      <b>Selling speed</b> compares how full this flight is now against how full
+      the same route and cabin normally is at the same number of days before
+      departure &nbsp;·&nbsp;
+      <b>Money at stake</b> = the price difference against the closest rival,
+      multiplied by the seats still unsold
     </div>""", unsafe_allow_html=True)
 
-    # Jump straight from an exception to the drill-down
-    jump_opts = ["— pick an SKU to analyse —"] + [
-        f"{t['route']} · {t['flight']} {t['time']} · {t['cabin']}"
-        for t in triage_rows if t["flag"] != "green"]
-    if len(jump_opts) > 1:
-        jsel = st.selectbox("Jump to exception", jump_opts, key="jumpbox")
-        if jsel != jump_opts[0]:
-            jr = next(t for t in triage_rows
-                      if f"{t['route']} · {t['flight']} {t['time']} · {t['cabin']}" == jsel)
-            if jr["route"] != sel_route or jr["cabin"] != sel_cabin:
-                st.session_state["jump_route"] = jr["route"]
-                st.session_state["jump_cabin"] = jr["cabin"]
-                st.rerun()
-
     st.markdown("<br>", unsafe_allow_html=True)
-    # ══════════ 1 · DRILL-DOWN: SELECTED ROUTE & CABIN ══════════
-    st.markdown(f'<div class="sec-hd">Drill-down — {sel_route} · {sel_cabin}</div>',
-                unsafe_allow_html=True)
+    jump = ["— open one of these in the Flight dashboard —"] + [
+        f'{t["route"]} · {t["flight"]} {t["time"]} · {t["cabin"]}'
+        for t in show_rows]
+    pick = st.selectbox("Investigate", jump, key="jumpbox")
+    if pick != jump[0]:
+        jr = next(t for t in show_rows
+                  if f'{t["route"]} · {t["flight"]} {t["time"]} · {t["cabin"]}' == pick)
+        if jr["route"] != C["sel_route"] or jr["cabin"] != C["sel_cabin"]:
+            st.session_state["jump_route"] = jr["route"]
+            st.session_state["jump_cabin"] = jr["cabin"]
+            st.rerun()
+        else:
+            st.info("Already selected in the sidebar — open the "
+                    "**Flight dashboard** tab.")
 
-    indigo_f = snap_all[(snap_all["Route"] == sel_route) &
-                        (snap_all["Cabin Class"] == sel_cabin)].copy()
+
+# ═════════════════════════════════════════════════════════════
+# TAB 2 — FLIGHT DASHBOARD
+# ═════════════════════════════════════════════════════════════
+def render_dashboard(C):
+    (indigo_df, comp_df, feedback_df, ai_log_df) = (
+        C["indigo_df"], C["comp_df"], C["feedback_df"], C["ai_log_df"])
+    sel_route, sel_cabin, sel_time = C["sel_route"], C["sel_cabin"], C["sel_time"]
+    sel_dates, pax_type, trip_type = C["sel_dates"], C["pax_type"], C["trip_type"]
+    pace_curve, dcol, today = C["pace_curve"], C["dcol"], C["today"]
+    dmin, analyst, standing = C["dmin"], C["analyst"], C["standing"]
+
+    st.markdown(f'<div class="tab-intro">Everything about '
+                f'<b>{sel_route}</b> · {sel_cabin}. Change route or cabin in the '
+                f'sidebar on the left.</div>', unsafe_allow_html=True)
+
+    indigo_f = C["snap_all"][(C["snap_all"]["Route"] == sel_route) &
+                             (C["snap_all"]["Cabin Class"] == sel_cabin)].copy()
     if sel_time != "All Times" and "Departure Time" in indigo_f.columns:
         indigo_f = indigo_f[indigo_f["Departure Time"].astype(str) == sel_time]
 
-    comp_f = comp_latest[(comp_latest["Route"] == sel_route) &
-                         (comp_latest["Cabin Class"] == sel_cabin)].copy() \
-             if not comp_latest.empty else pd.DataFrame()
+    comp_f = C["comp_latest"][(C["comp_latest"]["Route"] == sel_route) &
+                              (C["comp_latest"]["Cabin Class"] == sel_cabin)].copy() \
+             if not C["comp_latest"].empty else pd.DataFrame()
 
     if indigo_f.empty:
         st.info("No IndiGo flights for this route, cabin, time and date. "
-                "Widen the filters or pick another date.")
+                "Widen the filters in the sidebar.")
         return
 
     fopts = (indigo_f[["Flight No.", "Departure Time",
                        "Departure Date", "Days to Departure"]]
              .drop_duplicates().sort_values(["Departure Date", "Departure Time"]))
-    labels = [f"{r['Flight No.']}  ·  {r['Departure Time']}  ·  "
-              f"{pd.Timestamp(r['Departure Date']).strftime('%d %b %Y')}  "
-              f"({int(r['Days to Departure'])}d to departure)"
+    labels = [f'{fno_disp(r["Flight No."], r["Departure Time"])}  ·  '
+              f'{r["Departure Time"]}  ·  {dfmt(r["Departure Date"])}  '
+              f'({int(r["Days to Departure"])} days to departure)'
               for _, r in fopts.iterrows()]
-    sel_label = st.selectbox("Select flight to analyse", labels)
+    sel_label = st.selectbox("Which flight?", labels)
     fr = fopts.iloc[labels.index(sel_label)]
 
-    f_no   = str(fr["Flight No."])
-    f_time = str(fr["Departure Time"])
-    f_date = fr["Departure Date"]
-    f_days = int(fr["Days to Departure"])
+    f_raw_no = str(fr["Flight No."])
+    f_no     = fno_disp(f_raw_no, str(fr["Departure Time"]))
+    f_time   = str(fr["Departure Time"])
+    f_date   = fr["Departure Date"]
+    f_days   = int(fr["Days to Departure"])
 
-    frow    = indigo_f[(indigo_f["Flight No."] == f_no) &
+    frow    = indigo_f[(indigo_f["Flight No."].astype(str) == f_raw_no) &
                        (indigo_f["Departure Date"] == f_date)]
     f_lf    = float(frow["Load Factor"].iloc[0]) if not frow.empty else 0.6
     f_total = int(frow["Total Seats"].iloc[0]) if not frow.empty else 180
@@ -1210,15 +1370,15 @@ def main():
     f_sold  = 0 if pd.isna(_raw) else int(_raw)
     if f_sold <= 0 and f_lf > 0:
         f_sold = int(round(f_lf * f_total))
-    f_hol   = str(frow["Holiday / Festival"].iloc[0]) if not frow.empty else "No"
-    f_slot  = str(frow["Time Slot"].iloc[0]) if not frow.empty else ""
+    f_hol  = str(frow["Holiday / Festival"].iloc[0]) if not frow.empty else "No"
+    f_slot = str(frow["Time Slot"].iloc[0]) if not frow.empty else ""
 
     comp_same = comp_f[comp_f["Departure Date"] == f_date] \
                 if not comp_f.empty else pd.DataFrame()
     f_match = match_competitor(comp_same, deph(f_time))
-    comp_list = [(str(c["Airline"]), str(c["Flight No."]),
-                  str(c["Departure Time"]), int(c["Fare (INR)"]))
-                 for _, c in comp_same.iterrows() if pd.notna(c.get("Fare (INR)"))]
+    comp_list = [(str(c["Airline"]), str(c["Flight No."]), str(c["Departure Time"]),
+                  int(c["Fare (INR)"])) for _, c in comp_same.iterrows()
+                 if pd.notna(c.get("Fare (INR)"))]
 
     f_pace = pace_delta_for(pace_curve, sel_route, sel_cabin, f_days, f_lf)
     arith, bd = calc_fare(sel_route, sel_cabin, f_days, f_lf,
@@ -1226,151 +1386,149 @@ def main():
                           f_hol == "Yes", deph(f_time),
                           pax_type, trip_type, pace_delta=f_pace)
 
-    # Latest AI log entry for this flight
-    ai_today, mgr_today = "—", "Pending"
+    # ── Plain-English summary before any numbers ─────────────
+    spd_txt, spd_cls = fill_speed_words(f_pace)
+    if f_match:
+        gap = (arith - f_match["fare"]) / f_match["fare"]
+        cmp_sentence = (f'Against {f_match["airline"]} departing '
+                        f'{f_match["time"]} at {inr(f_match["fare"])}, we are '
+                        f'<b>{abs(gap)*100:.0f}% '
+                        f'{"higher" if gap > 0 else "lower"}</b>.')
+    else:
+        cmp_sentence = "No rival flight departs at a similar time on this date."
+    st.markdown(
+        f'<div class="insight">'
+        f'<b>{f_no}</b> departs {f_time} on <b>{dfmt(f_date, "long")}</b>, '
+        f'{f_days} days from now. It is <b>{round(f_lf*100)}% full</b> '
+        f'({f_sold} of {f_total} seats sold, {f_total - f_sold} left) and is '
+        f'<b>{spd_txt.lower()}</b> for this route at this stage. '
+        f'Our rules put the fare at <span class="big">{inr(arith)}</span>. '
+        f'{cmp_sentence}'
+        f'</div>', unsafe_allow_html=True)
+
+    # ── Recent AI + override ─────────────────────────────────
+    ai_today, mgr_today = "—", "Not yet reviewed"
     if not ai_log_df.empty and "Flight No." in ai_log_df.columns:
-        _log = ai_log_df.copy()
-        _log["_dk"] = _log["Departure Date"].map(dkey)
-        tl = _log[(_log["Flight No."].astype(str) == f_no) &
-                  (_log.get("Cabin Class", pd.Series(dtype=str)).astype(str)
-                   == sel_cabin) &
-                  (_log["_dk"] == dkey(f_date))]
+        _l = ai_log_df.copy()
+        _l["_dk"] = _l["Departure Date"].map(dkey)
+        tl = _l[(_l["Flight No."].astype(str) == f_raw_no) &
+                (_l.get("Cabin Class", pd.Series(dtype=str)).astype(str) == sel_cabin) &
+                (_l["_dk"] == dkey(f_date))]
         if not tl.empty:
             ai_today  = inr(tl.iloc[-1].get("AI Suggested Fare", ""))
             mgr_today = str(tl.iloc[-1].get("Manager Decision", "Pending") or "Pending")
 
-    # Manager override, today only
     ov_today = "—"
     if not feedback_df.empty and "Timestamp" in feedback_df.columns:
         fb = feedback_df.copy()
         fb["_ts"] = pd.to_datetime(fb["Timestamp"], errors="coerce")
         fb["_dk"] = fb.get("Departure Date", pd.Series(dtype=str)).map(dkey)
-        m = fb[(fb.get("Flight No.", pd.Series(dtype=str)).astype(str) == f_no) &
-               (fb["_dk"] == dkey(f_date)) &
-               (fb["_ts"] >= today) &
+        m = fb[(fb.get("Flight No.", pd.Series(dtype=str)).astype(str) == f_raw_no) &
+               (fb["_dk"] == dkey(f_date)) & (fb["_ts"] >= today) &
                (fb.get("Manager Decision", pd.Series(dtype=str)) == "Overridden")]
         if not m.empty:
             ov_today = inr(m.iloc[-1].get("Final Fare Used", ""))
 
-    cseat         = seat_cost(sel_route, sel_cabin)
-    profit_seat   = arith - cseat
-    flight_profit = profit_seat * f_sold
-
-    pace_val = "—" if f_pace is None else \
-               f'{"+" if f_pace >= 0 else ""}{f_pace*100:.0f}pt'
-    pace_kls = ("k-green" if f_pace is not None and f_pace >= 0.02 else
-                "k-red" if f_pace is not None and f_pace <= -0.05 else "k-amber")
-    pace_sub = ("vs this route's booking curve" if f_pace is not None
-                else "no history at this days-out")
+    cseat   = seat_cost(sel_route, sel_cabin)
+    p_seat  = arith - cseat
+    f_prof  = p_seat * f_sold
 
     st.markdown(f"""
     <div class="kpi-strip six">
       <div class="kpi-card">
-        <div class="kpi-val {lf_kpi(f_lf)}">{round(f_lf*100,1)}%</div>
-        <div class="kpi-lbl">Load factor</div>
-        <div class="kpi-sub">{f_sold}/{f_total} seats booked</div>
+        <div class="kpi-val {lf_kpi(f_lf)}">{round(f_lf*100)}%</div>
+        <div class="kpi-lbl">How full</div>
+        <div class="kpi-sub">{f_sold} of {f_total} seats sold</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-val {pace_kls}">{pace_val}</div>
-        <div class="kpi-lbl">Booking pace</div>
-        <div class="kpi-sub">{pace_sub}</div>
+        <div class="kpi-val" style="font-size:0.95rem;padding-top:0.3rem">{spd_txt}</div>
+        <div class="kpi-lbl">Selling speed</div>
+        <div class="kpi-sub">vs normal for this route</div>
       </div>
       <div class="kpi-card accent">
         <div class="kpi-val k-mag">{inr(arith)}</div>
-        <div class="kpi-lbl">Arithmetic fare</div>
-        <div class="kpi-sub">{sel_cabin} base {inr(bd['cabin_base'])}</div>
+        <div class="kpi-lbl">Our fare (rules)</div>
+        <div class="kpi-sub">{cabin_short(sel_cabin)} base {inr(bd['cabin_base'])}</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-val k-navy">{ai_today}</div>
-        <div class="kpi-lbl">AI recommended</div>
-        <div class="kpi-sub">Manager: {mgr_today}</div>
+        <div class="kpi-lbl">AI suggested</div>
+        <div class="kpi-sub">{mgr_today}</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-val k-amber">{ov_today}</div>
-        <div class="kpi-lbl">Manager override</div>
-        <div class="kpi-sub">Valid today only</div>
+        <div class="kpi-lbl">Manager's own price</div>
+        <div class="kpi-sub">Today only</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-val {'k-green' if flight_profit > 0 else 'k-red'}">{inr(flight_profit)}</div>
-        <div class="kpi-lbl">Est. flight profit</div>
-        <div class="kpi-sub">{inr(profit_seat)}/seat · cost {inr(cseat)}</div>
+        <div class="kpi-val {'k-green' if f_prof > 0 else 'k-red'}">{inr(f_prof)}</div>
+        <div class="kpi-lbl">Profit if all sold at this fare</div>
+        <div class="kpi-sub">{inr(p_seat)}/seat · cost {inr(cseat)}</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ══════════ 2 · AI PANEL ══════════
-    st.markdown('<div class="sec-hd">AI pricing recommendation</div>',
+    # ══════════ AI PANEL ══════════
+    st.markdown('<div class="sec-hd">Ask the AI to review this fare</div>',
                 unsafe_allow_html=True)
-
-    lfc, lfd = lf_cls(f_lf)
-    match_s = (f'{f_match["airline"]} {f_match["flight"]} at {f_match["time"]} '
-               f'— {inr(f_match["fare"])} ({f_match["gap"]:.0f}h away)'
-               if f_match else "no competitor on a comparable schedule")
-    st.markdown(f"""
-    <div class="flt-pill">
-      <span class="flt-pill-t">{f_no} · {f_time} · {f_slot}</span>
-      &nbsp;&nbsp;Load <span class="{lfc}">{lfd} {round(f_lf*100,1)}%</span>
-      &nbsp;·&nbsp; {f_sold}/{f_total} seats
-      &nbsp;·&nbsp; {f_days} days out
-      &nbsp;·&nbsp; time-matched competitor: {match_s}
-    </div>""", unsafe_allow_html=True)
 
     a_left, a_right = st.columns([1, 1.25], gap="large")
 
     with a_left:
         st.markdown('<div style="font-size:0.6rem;font-weight:700;color:#1B2D6B;'
                     'text-transform:uppercase;letter-spacing:0.09em;'
-                    'margin-bottom:0.35rem;">How the arithmetic fare is built</div>',
-                    unsafe_allow_html=True)
+                    'margin-bottom:0.35rem;">How we got to '
+                    f'{inr(arith)}</div>', unsafe_allow_html=True)
         rows = [
-            f'<div class="bd-row"><span>Route base (Economy)</span>'
+            f'<div class="bd-row"><span>Standard economy fare, this route</span>'
             f'<span>{inr(bd["route_base"])}</span></div>',
-            f'<div class="bd-row"><span class="bd-neu">{sel_cabin} tier '
-            f'× {bd["tier_mult"]:.2f}</span>'
+            f'<div class="bd-row"><span class="bd-neu">{cabin_short(sel_cabin)} '
+            f'cabin, {bd["tier_mult"]:.2f}× that</span>'
             f'<span>{inr(bd["cabin_base"])}</span></div>',
-            f'<div class="bd-row"><span style="color:#1B2D6B;font-weight:600">'
-            f'Demand signals</span><span></span></div>',
+            '<div class="bd-row"><span style="color:#1B2D6B;font-weight:600">'
+            'Then adjusted for:</span><span></span></div>',
         ]
-        for lbl, v in bd["items"]:
+        for name, v, lbl in bd["items"]:
             cls  = "bd-pos" if v > 0 else ("bd-neg" if v < 0 else "bd-neu")
             sign = "+" if v > 0 else ""
-            rows.append(f'<div class="bd-row"><span class="bd-neu">&nbsp;&nbsp;{lbl}'
-                        f'</span><span class="{cls}">{sign}{v*100:.0f}%</span></div>')
+            rows.append(f'<div class="bd-row"><span class="bd-neu">'
+                        f'&nbsp;&nbsp;{lbl}</span>'
+                        f'<span class="{cls}">{sign}{v*100:.0f}%</span></div>')
         ccls = ("bd-pos" if bd["comp_adj"] > 0 else
                 "bd-neg" if bd["comp_adj"] < 0 else "bd-neu")
         rows.append(f'<div class="bd-row"><span class="bd-neu">&nbsp;&nbsp;'
                     f'{bd["comp_label"]}</span>'
                     f'<span class="{ccls}">{bd["comp_adj"]*100:+.0f}%</span></div>')
-        cap_note = " (capped)" if bd["capped"] else ""
-        rows.append(f'<div class="bd-row"><span>Net demand adjustment{cap_note}</span>'
+        cap = " (limit reached)" if bd["capped"] else ""
+        rows.append(f'<div class="bd-row"><span>Total change{cap}</span>'
                     f'<span>{bd["total_demand"]*100:+.1f}%</span></div>')
-        rows.append(f'<div class="bd-row"><span>Arithmetic fare</span>'
+        rows.append(f'<div class="bd-row"><span>Our fare</span>'
                     f'<span style="color:#E91E8C">{inr(bd["final"])}</span></div>')
         st.markdown("<div class='arith-box'>" + "".join(rows) + "</div>",
                     unsafe_allow_html=True)
-        st.caption(f"{sel_cabin} is a product tier multiplier applied before demand "
-                   f"logic; demand itself is capped at "
-                   f"{DEMAND_CAP_LO*100:.0f}% to +{DEMAND_CAP_HI*100:.0f}%.")
+        st.caption(f"The cabin multiplier is applied first, then demand "
+                   f"adjustments move the price up or down within a "
+                   f"{DEMAND_CAP_LO*100:.0f}% to +{DEMAND_CAP_HI*100:.0f}% band.")
 
     with a_right:
         route_default = standing.get(sel_route, STRATEGIC_OPTIONS[0])
         idx = STRATEGIC_OPTIONS.index(route_default) \
               if route_default in STRATEGIC_OPTIONS else 0
         strategy = st.selectbox(
-            f"Strategic direction for {sel_route} (standing — remembered per route)",
+            f"Pricing goal for {sel_route} (remembered for this route)",
             STRATEGIC_OPTIONS, index=idx)
-        if strategy != route_default and st.button("📌  Save as route strategy"):
+        if strategy != route_default and st.button("📌  Save as this route's goal"):
             try:
                 save_strategy(sel_route, strategy, analyst or "Unknown")
-                st.success(f"Standing strategy saved for {sel_route}.")
+                st.success(f"Saved for {sel_route}.")
                 st.cache_data.clear()
             except Exception as e:
-                st.warning(f"Could not save strategy: {e}")
+                st.warning(f"Could not save: {e}")
 
         if st.button("🤖  Get AI recommendation"):
             if not (analyst or "").strip():
-                st.error("Enter your analyst name in the sidebar first — every "
-                         "decision is logged with who made it.")
+                st.error("Enter your name in the sidebar first — every decision "
+                         "is recorded against whoever made it.")
             else:
                 hist = []
                 if not ai_log_df.empty and "Route" in ai_log_df.columns:
@@ -1378,26 +1536,22 @@ def main():
                                    (ai_log_df.get("Manager Decision", "")
                                     .isin(["Accepted", "Overridden"]))]
                     hist = _h.to_dict("records")
-
                 snapshot = "; ".join(f"{a} {fn} {ft} {inr(fare)}"
                                      for a, fn, ft, fare in comp_list) or "none"
-
                 prompt_args = dict(
                     route=sel_route, flight_no=f_no, dep_time=f_time,
-                    cabin=sel_cabin, dep_date=str(f_date)[:10],
+                    cabin=sel_cabin, dep_date=dfmt(f_date),
                     days_to_dep=f_days, load_factor=f_lf, pace_delta=f_pace,
                     arithmetic_fare=arith, bd=bd, comp_match=f_match,
                     comp_all=comp_list, strategy=strategy, history=hist,
                     pax_type=pax_type, trip_type=trip_type)
-
-                with st.spinner("Asking the pricing analyst..."):
+                with st.spinner("Asking the AI pricing analyst..."):
                     dec, fare, rat, engine, note = call_llm(
                         prompt_args, bd, arith, f_match, f_lf)
-
                 try:
                     save_ai_log({"Log Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                  "Analyst": analyst, "Route": sel_route,
-                                 "Flight No.": f_no, "Departure Time": f_time,
+                                 "Flight No.": f_raw_no, "Departure Time": f_time,
                                  "Departure Date": dkey(f_date),
                                  "Cabin Class": sel_cabin,
                                  "Days to Departure": f_days,
@@ -1410,26 +1564,30 @@ def main():
                                  "Manager Decision": "Pending",
                                  "Final Fare Used": ""})
                 except Exception as e:
-                    st.warning(f"Recommendation received but could not be logged: {e}")
+                    st.warning(f"Recommendation received but not logged: {e}")
                 st.session_state["ai"] = {
                     "dec": dec, "fare": fare, "rat": rat, "arith": arith,
-                    "flt": f_no, "time": f_time, "date": dkey(f_date),
-                    "days": f_days, "lf": f_lf, "sold": f_sold,
-                    "strategy": strategy, "engine": engine, "note": note,
-                    "snapshot": snapshot}
+                    "flt": f_raw_no, "disp": f_no, "time": f_time,
+                    "date": dkey(f_date), "days": f_days, "lf": f_lf,
+                    "sold": f_sold, "strategy": strategy, "engine": engine,
+                    "note": note, "snapshot": snapshot}
                 st.rerun()
 
         if "ai" in st.session_state:
             r  = st.session_state["ai"]
             ok = str(r["dec"]).lower().startswith("approve")
             badge = "ai-badge-ok" if ok else "ai-badge-ov"
-            btxt  = "✔ Approves arithmetic fare" if ok else "⚡ Overrides arithmetic fare"
+            btxt  = "✔ Agrees with our fare" if ok else "⚡ Suggests a different fare"
             eng   = r.get("engine", "")
             is_fb = eng.startswith("Rules")
-            hdr   = "Rules-based recommendation" if is_fb else "AI recommendation"
+            hdr   = "Rules-based suggestion" if is_fb else "AI recommendation"
             c_bg  = "#fef3c7" if is_fb else "#e8f0fe"
             c_bd  = "#D97706" if is_fb else "#2F6FD0"
             c_tx  = "#b45309" if is_fb else "#1B2D6B"
+            delta = r["fare"] - r["arith"]
+            dtxt  = ("same as our rules" if delta == 0 else
+                     f'{inr(abs(delta))} {"higher" if delta > 0 else "lower"} '
+                     f'than our rules')
 
             st.markdown(f"""
             <div class="ai-result">
@@ -1439,6 +1597,7 @@ def main():
                 <span class="{badge}">{btxt}</span>
               </div>
               <div class="ai-price">{inr(r['fare'])}</div>
+              <div style="font-size:0.72rem;color:#7c8db5;margin-top:-0.2rem;">{dtxt}</div>
               <div class="ai-rat">{r['rat']}</div>
               <div style="margin-top:0.5rem;">
                 <span class="engine-chip" style="background:{c_bg};
@@ -1447,64 +1606,63 @@ def main():
             </div>""", unsafe_allow_html=True)
 
             if is_fb:
-                st.caption("No AI engine was reachable — this fare comes from the "
-                           "arithmetic rules only and is not an AI recommendation.")
+                st.caption("No AI engine could be reached, so this came from the "
+                           "pricing rules alone. It is not an AI recommendation.")
             if r.get("note"):
                 with st.expander("Engine diagnostics"):
                     st.code(r["note"])
 
-            st.markdown(f"**Manager decision** — applies to today only · "
-                        f"logged as **{analyst or 'Unknown'}**")
+            st.markdown(f"**Your decision** — applies to today only, recorded as "
+                        f"**{analyst or 'Unknown'}**")
 
             def commit(kind, final_fare):
-                base_row = {
-                    "Analyst": analyst or "Unknown", "Route": sel_route,
-                    "Flight No.": r["flt"], "Departure Time": r["time"],
-                    "Departure Date": r["date"], "Cabin Class": sel_cabin,
-                    "Days to Departure": r["days"],
-                    "Load Factor": round(r["lf"] * 100, 1),
-                    "Seats At Decision": r["sold"],
-                    "Arithmetic Fare": r["arith"], "AI Decision": r["dec"],
-                    "AI Suggested Fare": r["fare"], "AI Rationale": r["rat"],
-                    "Engine": r.get("engine", ""),
-                    "Competitor Snapshot": r.get("snapshot", ""),
-                    "Strategic Direction": r["strategy"],
-                    "Manager Decision": kind, "Final Fare Used": final_fare}
-                save_feedback({**base_row,
+                base = {"Analyst": analyst or "Unknown", "Route": sel_route,
+                        "Flight No.": r["flt"], "Departure Time": r["time"],
+                        "Departure Date": r["date"], "Cabin Class": sel_cabin,
+                        "Days to Departure": r["days"],
+                        "Load Factor": round(r["lf"] * 100, 1),
+                        "Seats At Decision": r["sold"],
+                        "Arithmetic Fare": r["arith"], "AI Decision": r["dec"],
+                        "AI Suggested Fare": r["fare"], "AI Rationale": r["rat"],
+                        "Engine": r.get("engine", ""),
+                        "Competitor Snapshot": r.get("snapshot", ""),
+                        "Strategic Direction": r["strategy"],
+                        "Manager Decision": kind, "Final Fare Used": final_fare}
+                save_feedback({**base,
                                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                "Passenger Type": pax_type, "Trip Type": trip_type,
                                "Manager Notes": ""})
-                save_ai_log({**base_row,
+                save_ai_log({**base,
                              "Log Date": datetime.now().strftime("%Y-%m-%d %H:%M")})
 
             m1, m2 = st.columns(2)
             with m1:
-                if st.button("✔  Accept this fare"):
+                if st.button("✔  Use this fare"):
                     try:
                         commit("Accepted", r["fare"])
-                        st.success(f"Accepted at {inr(r['fare'])}.")
+                        st.success(f"Set at {inr(r['fare'])}.")
                         del st.session_state["ai"]
-                        st.cache_data.clear()
-                        st.rerun()
+                        st.cache_data.clear(); st.rerun()
                     except Exception as e:
                         st.error(f"Could not save: {e}")
             with m2:
-                ov = st.number_input("Your fare (₹)", min_value=500, max_value=500000,
-                                     value=int(r["fare"]), step=100, key="ovval")
+                ov = st.number_input("Set my own fare (₹)", min_value=500,
+                                     max_value=500000, value=int(r["fare"]),
+                                     step=100, key="ovval")
                 if st.button("✏  Use my fare instead"):
                     try:
                         commit("Overridden", int(ov))
-                        st.success(f"Override saved at {inr(ov)}.")
+                        st.success(f"Set at {inr(ov)}.")
                         del st.session_state["ai"]
-                        st.cache_data.clear()
-                        st.rerun()
+                        st.cache_data.clear(); st.rerun()
                     except Exception as e:
                         st.error(f"Could not save: {e}")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    # ══════════ 3 · FARE COMPARISON TABLE ══════════
-    st.markdown('<div class="sec-hd">Fare comparison — time-matched competitors</div>',
-                unsafe_allow_html=True)
+
+    # ══════════ FARE TABLE ══════════
+    st.markdown('<div class="sec-hd">Every flight on this route, '
+                'against its closest rival</div>', unsafe_allow_html=True)
 
     acc_lookup, log_lookup = {}, {}
     if not feedback_df.empty and "Manager Decision" in feedback_df.columns:
@@ -1528,22 +1686,22 @@ def main():
     cabin_base_disp = int(BASE_FARES.get(sel_route, 5000)
                           * CABIN_MULT.get(sel_cabin, 1.0))
 
-    html = ("""<table class="fare-tbl"><colgroup>
-    <col style="width:13%"><col style="width:10%"><col style="width:8%">
-    <col style="width:8%"><col style="width:7%"><col style="width:10%">
-    <col style="width:10%"><col style="width:10%"><col style="width:16%">
-    <col style="width:8%"></colgroup>
-    <thead><tr>
-      <th>IndiGo flight</th><th>Slot</th><th>Load</th><th>Seats</th>
-      <th>Pace</th><th>Cabin base</th><th>Arithmetic</th><th>AI rec</th>
-      <th>Nearest competitor</th><th>Gap</th>
+    html = ("""<table class="wrap"><colgroup>
+    <col style="width:14%"><col style="width:11%"><col style="width:9%">
+    <col style="width:13%"><col style="width:10%"><col style="width:11%">
+    <col style="width:10%"><col style="width:14%"><col style="width:8%">
+    </colgroup><thead><tr>
+      <th>IndiGo flight</th><th>Time of day</th><th>How full</th>
+      <th>Selling speed</th><th>Cabin base</th><th>Our fare</th>
+      <th>AI / final</th><th>Closest rival</th><th>Difference</th>
     </tr></thead><tbody>""")
 
     cur_date = None
     for _, row in indigo_f.sort_values(["Departure Date", "Departure Time"]).iterrows():
         dd   = row["Departure Date"]
-        fno  = str(row.get("Flight No.", ""))
+        raw  = str(row.get("Flight No.", ""))
         ftm  = str(row.get("Departure Time", ""))
+        fno  = fno_disp(raw, ftm)
         slot = str(row.get("Time Slot", ""))
         dout = int(row.get("Days to Departure", 30) or 30)
         lf   = float(row.get("Load Factor", 0) or 0)
@@ -1551,148 +1709,153 @@ def main():
         sold = int(row.get("Seats Sold", 0) or 0)
         if sold <= 0 and lf > 0:
             sold = int(round(lf * tot))
-        hol  = str(row.get("Holiday / Festival", "No"))
+        hol = str(row.get("Holiday / Festival", "No"))
         c, dot = lf_cls(lf)
 
         if cur_date is None or dd != cur_date:
             cur_date = dd
-            lbl = dd.strftime("%A, %d %B %Y") if hasattr(dd, "strftime") else str(dd)[:10]
-            html += (f'<tr class="date-sep"><td colspan="10">✈ {lbl}'
-                     f' &nbsp;—&nbsp; {dout} days to departure</td></tr>')
+            html += (f'<tr class="date-sep"><td colspan="9">✈ '
+                     f'{dfmt(dd, "long")} &nbsp;—&nbsp; {dout} days to '
+                     f'departure</td></tr>')
 
         rows_c = comp_f[comp_f["Departure Date"] == dd] \
                  if not comp_f.empty else pd.DataFrame()
-        mt = match_competitor(rows_c, deph(ftm))
+        mt  = match_competitor(rows_c, deph(ftm))
         pdl = pace_delta_for(pace_curve, sel_route, sel_cabin, dout, lf)
-        ar, _bd = calc_fare(sel_route, sel_cabin, dout, lf,
-                            mt["fare"] if mt else 0, hol == "Yes", deph(ftm),
-                            pax_type, trip_type, pace_delta=pdl)
+        ar, _b = calc_fare(sel_route, sel_cabin, dout, lf,
+                           mt["fare"] if mt else 0, hol == "Yes", deph(ftm),
+                           pax_type, trip_type, pace_delta=pdl)
 
-        dk = dkey(dd)
-        rec = acc_lookup.get((fno, sel_cabin, dk)) or log_lookup.get((fno, sel_cabin, dk))
-        rec_cls = "f-ai" if acc_lookup.get((fno, sel_cabin, dk)) else "f-ailog"
+        dk  = dkey(dd)
+        acc = acc_lookup.get((raw, sel_cabin, dk))
+        rec = acc or log_lookup.get((raw, sel_cabin, dk))
+        rcls = "f-ai" if acc else "f-ailog"
+        rsub = "manager set" if acc else ("AI suggested" if rec else "")
 
         if mt:
-            comp_s = f'{mt["airline"]} {mt["flight"]} {mt["time"]} · {inr(mt["fare"])}'
+            comp_s = (f'{mt["airline"]}<br><span style="color:{GREY};'
+                      f'font-size:0.67rem">{mt["time"]} · {inr(mt["fare"])}</span>')
             g = (ar - mt["fare"]) / mt["fare"]
-            gap_s = pct(g)
+            gap_s = f'{"+" if g > 0 else ""}{g*100:.0f}%'
             gcls = "f-exp" if g > 0.03 else ("f-cheap" if g < -0.03 else "f-sim")
         else:
             comp_s, gap_s, gcls = "—", "—", ""
 
-        pace_s = ("—" if pdl is None else
-                  f'{"+" if pdl >= 0 else ""}{pdl*100:.0f}pt')
-        pcls = ("f-cheap" if pdl is not None and pdl >= 0.02
-                else "f-exp" if pdl is not None and pdl <= -0.05 else "f-sim")
+        spd_txt, spd_cls = fill_speed_words(pdl)
 
         html += f"""<tr>
-          <td class="f-navy">{fno} {ftm}</td>
-          <td style="color:{GREY};font-size:0.67rem">{slot}</td>
-          <td><span class="{c}">{dot} {round(lf*100,1)}%</span></td>
-          <td style="color:{GREY}">{sold}/{tot}</td>
-          <td><span class="{pcls}">{pace_s}</span></td>
-          <td class="f-navy">{inr(cabin_base_disp)}</td>
-          <td class="f-mag">{inr(ar)}</td>
-          <td class="{rec_cls}">{inr(rec) if rec else '—'}</td>
-          <td style="color:{GREY};font-size:0.67rem">{comp_s}</td>
-          <td><span class="{gcls}">{gap_s}</span></td>
+          <td class="f-navy"><b>{fno}</b><br>
+              <span style="color:{GREY};font-size:0.67rem">{ftm}</span></td>
+          <td style="color:{GREY};font-size:0.71rem">{slot}</td>
+          <td class="num"><span class="{c}">{dot} {round(lf*100)}%</span><br>
+              <span style="color:{GREY};font-size:0.66rem">{sold}/{tot}</span></td>
+          <td><span class="{spd_cls}" style="font-size:0.7rem">{spd_txt}</span></td>
+          <td class="num f-navy">{inr(cabin_base_disp)}</td>
+          <td class="num f-mag"><b>{inr(ar)}</b></td>
+          <td class="num"><span class="{rcls}">{inr(rec) if rec else '—'}</span><br>
+              <span style="color:{GREY};font-size:0.63rem">{rsub}</span></td>
+          <td style="font-size:0.71rem">{comp_s}</td>
+          <td class="num"><span class="{gcls}">{gap_s}</span></td>
         </tr>"""
-
     html += "</tbody></table>"
     st.markdown(html, unsafe_allow_html=True)
     st.markdown(f"""<div class="legend-row">
-      Cabin base = route base × {sel_cabin} tier multiplier
-      ({CABIN_MULT.get(sel_cabin, 1.0):.2f}×) &nbsp;·&nbsp;
-      <span style="color:{MAGENTA}">■</span> Arithmetic fare for your filters &nbsp;
-      <span style="color:{SKY}">■</span> AI rec accepted by manager &nbsp;
-      <span style="color:#0891b2">■</span> AI rec suggested, pending &nbsp;·&nbsp;
-      Competitor shown is the nearest by departure time, not the day's cheapest
+      <b>Cabin base</b> is the standard {cabin_short(sel_cabin)} fare for this
+      route before any adjustment
+      ({CABIN_MULT.get(sel_cabin, 1.0):.2f}× the economy fare) &nbsp;·&nbsp;
+      <b>Our fare</b> is what the rules produce for your chosen passenger type
+      and trip type &nbsp;·&nbsp;
+      <b>Closest rival</b> is the competitor flight departing nearest in time,
+      not the cheapest flight of the day
     </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ══════════ 4 · CHARTS ══════════
+    # ══════════ CHARTS ══════════
     c_left, c_right = st.columns([1, 1.15], gap="large")
 
-    # 4a — Booking build-up with pace target
     with c_left:
-        st.markdown('<div class="sec-hd">Booking build-up vs route pace</div>',
+        st.markdown('<div class="sec-hd">How this flight has been filling up</div>',
                     unsafe_allow_html=True)
-
-        flights = []
-        subr = indigo_df[indigo_df["Route"] == sel_route]
+        flights, subr = [], indigo_df[indigo_df["Route"] == sel_route]
         if not subr.empty:
-            flights = sorted(
-                subr.apply(lambda r: f"{r['Flight No.']} {r['Departure Time']}",
-                           axis=1).dropna().unique().tolist())
-
+            flights = sorted(subr.apply(
+                lambda r: f'{r["Flight No."]}|{r["Departure Time"]}',
+                axis=1).dropna().unique().tolist())
         if not flights:
-            st.info("No flights available for this route.")
+            st.info("No flights on this route.")
         else:
-            cur = f"{f_no} {f_time}"
-            pick = st.selectbox("Flight", flights,
-                                index=flights.index(cur) if cur in flights else 0,
-                                key="lfpick")
-            pno = pick.split(" ")[0]
+            disp = [f'{fno_disp(x.split("|")[0], x.split("|")[1])} · {x.split("|")[1]}'
+                    for x in flights]
+            cur = f'{f_raw_no}|{f_time}'
+            ix = flights.index(cur) if cur in flights else 0
+            pick_d = st.selectbox("Flight", disp, index=ix, key="lfpick")
+            pno = flights[disp.index(pick_d)].split("|")[0]
+
             hist = indigo_df[(indigo_df["Route"] == sel_route) &
                              (indigo_df["Cabin Class"] == sel_cabin) &
                              (indigo_df["Flight No."].astype(str) == pno) &
                              (indigo_df["Departure Date"].isin(sel_dates))].copy()
-
             if hist.empty or dcol not in hist.columns:
                 st.info("No booking history for this flight on the selected date.")
             else:
                 hist = hist.dropna(subset=[dcol]).sort_values(dcol)
                 hist = hist.groupby(dcol, as_index=False).last()
-                hist["LF%"] = (pd.to_numeric(hist["Load Factor"], errors="coerce")
-                               * 100).round(1)
+                hist["Full%"] = (pd.to_numeric(hist["Load Factor"],
+                                               errors="coerce") * 100).round(1)
                 seats = pd.to_numeric(hist["Seats Sold"], errors="coerce")
-                hist["New bookings"] = seats.diff().fillna(seats).clip(lower=0)
-                hist["dout"] = pd.to_numeric(hist["Days to Departure"],
-                                             errors="coerce")
-                hist["Target%"] = hist["dout"].map(
-                    lambda d: (pace_curve.get((sel_route, sel_cabin, int(d)))
-                               if pd.notna(d) else None))
-                hist["Target%"] = (pd.to_numeric(hist["Target%"], errors="coerce")
-                                   * 100).round(1)
+                hist["Booked"] = seats.diff().fillna(seats).clip(lower=0)
+                hist["dout"] = pd.to_numeric(hist["Days to Departure"], errors="coerce")
+                hist["Usual%"] = hist["dout"].map(
+                    lambda d: pace_curve.get((sel_route, sel_cabin, int(d)))
+                    if pd.notna(d) else None)
+                hist["Usual%"] = (pd.to_numeric(hist["Usual%"], errors="coerce")
+                                  * 100).round(1)
+                hist["_lbl"] = hist[dcol].map(lambda x: dfmt(x, "day"))
+
+                if hist["Full%"].notna().any() and hist["Usual%"].notna().any():
+                    d_now = hist["Full%"].iloc[-1] - hist["Usual%"].iloc[-1]
+                    verdict = ("ahead of" if d_now > 2 else
+                               "behind" if d_now < -2 else "in line with")
+                    st.markdown(f'<div class="insight" style="font-size:0.8rem">'
+                                f'This flight is currently <b>{verdict}</b> where '
+                                f'this route normally is at this point '
+                                f'({hist["Full%"].iloc[-1]:.0f}% full versus a '
+                                f'typical {hist["Usual%"].iloc[-1]:.0f}%).</div>',
+                                unsafe_allow_html=True)
 
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                                    vertical_spacing=0.08, row_heights=[0.4, 0.6])
+                                    vertical_spacing=0.09, row_heights=[0.4, 0.6])
                 fig.add_trace(go.Bar(
-                    x=hist[dcol], y=hist["New bookings"],
-                    name="New bookings that day",
+                    x=hist["_lbl"], y=hist["Booked"], name="Seats booked that day",
                     marker_color="rgba(233,30,140,0.55)",
                     hovertemplate="%{y:.0f} seats<extra></extra>"), row=1, col=1)
                 fig.add_trace(go.Scatter(
-                    x=hist[dcol], y=hist["LF%"], name="This flight's load factor",
+                    x=hist["_lbl"], y=hist["Full%"], name="This flight",
                     mode="lines+markers", line=dict(color=NAVY, width=2.5),
                     marker=dict(size=5, color=NAVY), fill="tozeroy",
                     fillcolor="rgba(27,45,107,0.07)",
-                    hovertemplate="%{y:.1f}%<extra></extra>"), row=2, col=1)
-                if hist["Target%"].notna().any():
+                    hovertemplate="%{y:.1f}% full<extra></extra>"), row=2, col=1)
+                if hist["Usual%"].notna().any():
                     fig.add_trace(go.Scatter(
-                        x=hist[dcol], y=hist["Target%"],
-                        name="Route's typical pace",
+                        x=hist["_lbl"], y=hist["Usual%"],
+                        name="Normal for this route",
                         mode="lines", line=dict(color=AMBER, width=2, dash="dot"),
-                        hovertemplate="%{y:.1f}%<extra></extra>"), row=2, col=1)
-                fig.add_hline(y=85, line_dash="dot", line_color=RED,
-                              line_width=1, row=2, col=1)
+                        hovertemplate="%{y:.1f}% typical<extra></extra>"),
+                        row=2, col=1)
                 fig.update_yaxes(title_text="Seats", row=1, col=1)
-                fig.update_yaxes(title_text="Load %", range=[0, 105], row=2, col=1)
-                fig.update_xaxes(title_text="Observation date", row=2, col=1)
+                fig.update_yaxes(title_text="% full", range=[0, 105], row=2, col=1)
+                fig.update_xaxes(title_text="", row=2, col=1)
                 style_chart(fig, height=340)
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption(f"{pick} against the average booking curve of "
-                           f"{sel_route} {sel_cabin} at the same days-out. "
-                           "Above the dotted amber line = ahead of pace.")
+                st.caption("Pink bars are seats sold each day. The navy line is how "
+                           "full the flight is; the dotted amber line is how full "
+                           "this route usually is by the same point.")
 
-    # 4b — Price trend, matched-competitor granularity
     with c_right:
-        st.markdown('<div class="sec-hd">Price trend — this flight vs its '
-                    'time-matched competitors</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-hd">How prices have moved</div>',
+                    unsafe_allow_html=True)
         frames = []
-
-        # Competitor fares over scrape history, only flights within 3h of ours
         ch = comp_df[(comp_df["Route"] == sel_route) &
                      (comp_df["Cabin Class"] == sel_cabin) &
                      (comp_df["Departure Date"].isin(sel_dates)) &
@@ -1705,25 +1868,22 @@ def main():
             near = ch[ch["_gap"] <= 3.0]
             if near.empty:
                 near = ch
-            g = (near.groupby(["Scrape Date", "Airline"])["Fare (INR)"]
-                 .mean().reset_index())
+            g = near.groupby(["Scrape Date", "Airline"])["Fare (INR)"].mean().reset_index()
             g.columns = ["Date", "Series", "Fare"]
             frames.append(g)
 
-        # Our arithmetic fare recomputed for each historical day, THIS flight only
         ih = indigo_df[(indigo_df["Route"] == sel_route) &
                        (indigo_df["Cabin Class"] == sel_cabin) &
-                       (indigo_df["Flight No."].astype(str) == f_no) &
+                       (indigo_df["Flight No."].astype(str) == f_raw_no) &
                        (indigo_df["Departure Date"].isin(sel_dates))].copy()
         if not ih.empty and dcol in ih.columns:
             ih = ih.dropna(subset=[dcol])
             ih = ih[ih[dcol] >= dmin].sort_values(dcol)
-            rows = []
+            rws = []
             for _, g2 in ih.iterrows():
                 d = g2[dcol]
-                day_comp = ch[ch["Scrape Date"] == d] if not ch.empty else pd.DataFrame()
-                mtd = match_competitor(day_comp, deph(f_time)) \
-                      if not day_comp.empty else None
+                dayc = ch[ch["Scrape Date"] == d] if not ch.empty else pd.DataFrame()
+                mtd = match_competitor(dayc, deph(f_time)) if not dayc.empty else None
                 dl = pace_delta_for(pace_curve, sel_route, sel_cabin,
                                     int(g2.get("Days to Departure", 30) or 30),
                                     float(g2.get("Load Factor", 0.6) or 0.6))
@@ -1734,311 +1894,350 @@ def main():
                                  str(g2.get("Holiday / Festival", "No")) == "Yes",
                                  deph(g2.get("Departure Time", "10:00")),
                                  pax_type, trip_type, pace_delta=dl)
-                rows.append({"Date": d, "Series": "IndiGo arithmetic", "Fare": v})
-            if rows:
-                frames.append(pd.DataFrame(rows))
+                rws.append({"Date": d, "Series": "IndiGo (our rules)", "Fare": v})
+            if rws:
+                frames.append(pd.DataFrame(rws))
 
-        # AI recommendations for THIS flight and cabin
         if not ai_log_df.empty and "Log Date" in ai_log_df.columns:
             al = ai_log_df.copy()
-            al["_dk"] = al.get("Departure Date",
-                               pd.Series(dtype=str)).map(dkey)
+            al["_dk"] = al.get("Departure Date", pd.Series(dtype=str)).map(dkey)
             al = al[(al.get("Route", "") == sel_route) &
                     (al.get("Cabin Class", "") == sel_cabin) &
-                    (al.get("Flight No.", pd.Series(dtype=str)).astype(str) == f_no) &
+                    (al.get("Flight No.", pd.Series(dtype=str)).astype(str) == f_raw_no) &
                     (al["_dk"] == dkey(f_date))]
             if not al.empty and "AI Suggested Fare" in al.columns:
                 al["AI Suggested Fare"] = pd.to_numeric(al["AI Suggested Fare"],
                                                         errors="coerce")
-                al["_d"] = pd.to_datetime(al["Log Date"],
-                                          errors="coerce").dt.normalize()
+                al["_d"] = pd.to_datetime(al["Log Date"], errors="coerce").dt.normalize()
                 al = al.dropna(subset=["_d", "AI Suggested Fare"])
                 if not al.empty:
                     g = al.groupby("_d")["AI Suggested Fare"].mean().reset_index()
                     g.columns = ["Date", "Fare"]
-                    g["Series"] = "IndiGo AI recommended"
+                    g["Series"] = "IndiGo (AI suggested)"
                     frames.append(g[["Date", "Series", "Fare"]])
 
         if frames:
             allt = pd.concat(frames, ignore_index=True).dropna(subset=["Fare"])
-            fig2 = px.line(allt, x="Date", y="Fare", color="Series", markers=True,
+            allt["_lbl"] = allt["Date"].map(lambda x: dfmt(x, "day"))
+            allt = allt.sort_values("Date")
+            fig2 = px.line(allt, x="_lbl", y="Fare", color="Series", markers=True,
                            color_discrete_map={"Air India": SKY, "Akasa Air": RED,
-                                               "IndiGo arithmetic": MAGENTA,
-                                               "IndiGo AI recommended": NAVY})
+                                               "IndiGo (our rules)": MAGENTA,
+                                               "IndiGo (AI suggested)": NAVY})
             for tr in fig2.data:
-                if tr.name in ("IndiGo arithmetic", "IndiGo AI recommended"):
-                    tr.line.dash = "dash"
-                    tr.line.width = 2.5
+                if tr.name.startswith("IndiGo"):
+                    tr.line.dash = "dash"; tr.line.width = 2.5
             fig2.update_yaxes(title_text="Fare (₹)")
             fig2.update_xaxes(title_text="")
             style_chart(fig2, height=340)
             st.plotly_chart(fig2, use_container_width=True)
-            st.caption("Every line describes the same product: this flight and "
-                       "cabin, with competitors filtered to departures within 3 "
-                       "hours. Dashed = IndiGo's own arithmetic and AI fares.")
+            st.caption("All lines describe the same seat: this flight and cabin. "
+                       "Rivals are limited to flights departing within three hours "
+                       "of ours. Dashed lines are IndiGo's own prices.")
         else:
-            st.info("No trend data yet for this flight.")
+            st.info("No price history yet for this flight.")
 
-    # 4c — Demand curve scatter, full width
-    st.markdown('<div class="sec-hd">Demand curve — fare vs load factor, '
-                'every observation</div>', unsafe_allow_html=True)
-
+    st.markdown('<div class="sec-hd">Price against how full the flight gets</div>',
+                unsafe_allow_html=True)
     sc = indigo_df[(indigo_df["Route"] == sel_route) &
                    (indigo_df["Cabin Class"] == sel_cabin)].copy()
     if sc.empty or dcol not in sc.columns:
-        st.info("Not enough history for a demand scatter yet.")
+        st.info("Not enough history yet.")
     else:
         sc = sc.dropna(subset=["Load Factor", "Days to Departure"])
         pts = []
         for _, g2 in sc.iterrows():
             dl = pace_delta_for(pace_curve, sel_route, sel_cabin,
-                                int(g2["Days to Departure"]),
-                                float(g2["Load Factor"]))
+                                int(g2["Days to Departure"]), float(g2["Load Factor"]))
             v, _ = calc_fare(sel_route, sel_cabin, int(g2["Days to Departure"]),
                              float(g2["Load Factor"]), 0,
                              str(g2.get("Holiday / Festival", "No")) == "Yes",
-                             deph(g2.get("Departure Time", "10:00")),
-                             pace_delta=dl)
-            pts.append({"Fare": v, "LF": float(g2["Load Factor"]) * 100,
-                        "Days out": int(g2["Days to Departure"]),
-                        "Flight": f"{g2['Flight No.']} {g2['Departure Time']}"})
+                             deph(g2.get("Departure Time", "10:00")), pace_delta=dl)
+            pts.append({"Fare": v, "Full": float(g2["Load Factor"]) * 100,
+                        "Days before departure": int(g2["Days to Departure"]),
+                        "Flight": fno_disp(g2["Flight No."], g2["Departure Time"])})
         spd = pd.DataFrame(pts)
-        fig4 = px.scatter(spd, x="Fare", y="LF", color="Flight",
-                          size="Days out", size_max=13, opacity=0.65,
+        fig4 = px.scatter(spd, x="Fare", y="Full", color="Flight",
+                          size="Days before departure", size_max=13, opacity=0.65,
                           color_discrete_sequence=[NAVY, MAGENTA, SKY, AMBER])
-        fig4.update_yaxes(title_text="Load factor %", range=[0, 105])
-        fig4.update_xaxes(title_text="Rules-based fare (₹)")
+        fig4.update_yaxes(title_text="% full", range=[0, 105])
+        fig4.update_xaxes(title_text="Fare our rules would charge (₹)")
         style_chart(fig4, height=300)
         st.plotly_chart(fig4, use_container_width=True)
-        st.caption("Each dot is one daily observation of one flight. Bigger dots "
-                   "are further from departure. This is the route's demand "
-                   "picture: how fill rate and our pricing move together.")
+        st.caption("Each dot is one day's reading for one flight. Larger dots are "
+                   "further from departure. Dots drifting up and to the right mean "
+                   "the flight fills as the date nears and we charge more for it.")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    # ══════════ 5 · BACK-TEST: DYNAMIC RULES vs FLAT BASE PRICING ══════════
-    st.markdown('<div class="sec-hd">Back-test — what the rules engine would have '
-                'earned vs flat pricing</div>', unsafe_allow_html=True)
 
-    bt_scope = st.radio("Back-test scope", ["This route & cabin", "All routes"],
-                        horizontal=True, key="bt_scope")
+# ═════════════════════════════════════════════════════════════
+# TAB 3 — DECISION HISTORY
+# ═════════════════════════════════════════════════════════════
+def render_history(C):
+    ai_log_df, indigo_df = C["ai_log_df"], C["indigo_df"]
+    sel_route, dcol = C["sel_route"], C["dcol"]
+
+    st.markdown('<div class="tab-intro">Every fare the AI has reviewed, what it '
+                'said, who decided, and whether bookings moved afterwards. This '
+                'record is fed back into future recommendations.</div>',
+                unsafe_allow_html=True)
+
+    if ai_log_df.empty:
+        st.info("Nothing recorded yet. Use the Flight dashboard to get your "
+                "first recommendation and it will appear here.")
+        return
+
+    h = ai_log_df.copy()
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        scope = st.radio("Show", ["This route", "All routes"], index=0,
+                         horizontal=True, key="hist_scope")
+    with c2:
+        outcome = st.selectbox("Outcome", ["All", "Accepted", "Overridden",
+                                           "Pending"], key="hist_outcome")
+
+    if scope == "This route" and "Route" in h.columns:
+        h = h[h["Route"] == sel_route]
+    if outcome != "All" and "Manager Decision" in h.columns:
+        h = h[h["Manager Decision"] == outcome]
+
+    if h.empty:
+        st.info("Nothing matches this filter.")
+        return
+
+    if "Log Date" in h.columns:
+        h["_ld"] = pd.to_datetime(h["Log Date"], errors="coerce")
+        h["_day"] = h["_ld"].dt.normalize()
+        keys = [c for c in ["Flight No.", "Cabin Class", "Departure Date"]
+                if c in h.columns]
+        if keys:
+            h = h.sort_values("_ld").drop_duplicates(subset=keys + ["_day"],
+                                                     keep="last")
+
+    def bookings_after(row):
+        try:
+            fno = str(row.get("Flight No.", ""))
+            cb  = str(row.get("Cabin Class", ""))
+            dk  = dkey(row.get("Departure Date", ""))
+            d0  = pd.to_datetime(row.get("Log Date"), errors="coerce").normalize()
+            s0  = pd.to_numeric(row.get("Seats At Decision"), errors="coerce")
+            if pd.isna(d0) or pd.isna(s0):
+                return None
+            obs = indigo_df[(indigo_df["Flight No."].astype(str) == fno) &
+                            (indigo_df["Cabin Class"].astype(str) == cb) &
+                            (indigo_df["Departure Date"].map(dkey) == dk) &
+                            (indigo_df[dcol] > d0) &
+                            (indigo_df[dcol] <= d0 + timedelta(days=1))]
+            if obs.empty:
+                return None
+            s1 = pd.to_numeric(obs.sort_values(dcol).iloc[-1]["Seats Sold"],
+                               errors="coerce")
+            return None if pd.isna(s1) else int(s1 - s0)
+        except Exception:
+            return None
+
+    h["Seats booked next day"] = h.apply(bookings_after, axis=1)
+
+    mgr   = h.get("Manager Decision", pd.Series(dtype=str))
+    n_acc = int((mgr == "Accepted").sum())
+    n_ovr = int((mgr == "Overridden").sum())
+    n_pen = int((mgr == "Pending").sum())
+    rate  = n_acc / max(len(h), 1) * 100
+
+    tracked = h["Seats booked next day"].dropna()
+    out_txt = ""
+    if len(tracked) > 0:
+        out_txt = (f' Of the {len(tracked)} decisions old enough to check, '
+                   f'flights picked up <b>{tracked.mean():.1f} seats on average</b> '
+                   f'in the following day.')
+
+    if rate >= 70:
+        judge = "the pricing team largely trusts the AI"
+    elif rate >= 40:
+        judge = "the team accepts the AI about half the time"
+    else:
+        judge = "the team is overriding the AI more often than accepting it"
+
+    st.markdown(
+        f'<div class="insight">'
+        f'<b>{len(h)} fares reviewed.</b> {n_acc} accepted as suggested, '
+        f'{n_ovr} overridden by a manager, {n_pen} still awaiting a decision. '
+        f'That is an acceptance rate of <span class="big">{rate:.0f}%</span>, '
+        f'which suggests {judge}.{out_txt}'
+        f'</div>', unsafe_allow_html=True)
+
+    for c in ("Log Date", "Departure Date"):
+        if c in h.columns:
+            h[c] = h[c].map(lambda v: dfmt(v))
+
+    show = [c for c in ["Log Date", "Analyst", "Route", "Flight No.",
+                        "Cabin Class", "Departure Date", "Load Factor",
+                        "Arithmetic Fare", "AI Suggested Fare", "Engine",
+                        "Manager Decision", "Final Fare Used",
+                        "Seats booked next day", "Strategic Direction",
+                        "Competitor Snapshot", "AI Rationale"]
+            if c in h.columns]
+    st.dataframe(h.sort_values("_ld", ascending=False)[show],
+                 use_container_width=True, hide_index=True,
+                 column_config={
+                     "Log Date": st.column_config.TextColumn("Reviewed on"),
+                     "Arithmetic Fare": st.column_config.NumberColumn(
+                         "Our fare", format="₹%d"),
+                     "AI Suggested Fare": st.column_config.NumberColumn(
+                         "AI said", format="₹%d"),
+                     "Final Fare Used": st.column_config.NumberColumn(
+                         "Fare used", format="₹%d"),
+                     "AI Rationale": st.column_config.TextColumn(
+                         "Why the AI said that", width="large"),
+                     "Competitor Snapshot": st.column_config.TextColumn(
+                         "Rival fares at the time", width="medium"),
+                 })
+    st.caption("Accepted and overridden rows for the selected route are quoted "
+               "back to the AI on its next review, so it learns which of its "
+               "advice the team actually acts on.")
+
+
+# ═════════════════════════════════════════════════════════════
+# TAB 4 — BUSINESS CASE
+# ═════════════════════════════════════════════════════════════
+def render_business_case(C):
+    indigo_df, feedback_df = C["indigo_df"], C["feedback_df"]
+    sel_route, sel_cabin = C["sel_route"], C["sel_cabin"]
+    pace_curve, dcol = C["pace_curve"], C["dcol"]
+
+    st.markdown('<div class="tab-intro">What this system is worth: how much more '
+                'revenue dynamic pricing would have earned, and the profit on '
+                'fares already approved.</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="sec-hd">If we had priced this way all along</div>',
+                unsafe_allow_html=True)
+    scope = st.radio("Test on", ["This route and cabin", "All routes"],
+                     horizontal=True, key="bt_scope")
 
     bt = indigo_df.copy()
-    if bt_scope == "This route & cabin":
+    if scope == "This route and cabin":
         bt = bt[(bt["Route"] == sel_route) & (bt["Cabin Class"] == sel_cabin)]
+
     if bt.empty or dcol not in bt.columns:
-        st.info("Not enough history to back-test yet.")
+        st.info("Not enough history to test against yet.")
     else:
-        bt = bt.dropna(subset=[dcol, "Load Factor", "Days to Departure"]).copy()
-        bt = bt.sort_values(dcol)
+        bt = bt.dropna(subset=[dcol, "Load Factor", "Days to Departure"]).sort_values(dcol)
         keys = ["Route", "Flight No.", "Cabin Class", "Departure Date"]
         bt["Seats Sold"] = pd.to_numeric(bt["Seats Sold"], errors="coerce")
         bt["_new"] = (bt.groupby(keys)["Seats Sold"].diff()
                       .fillna(bt["Seats Sold"]).clip(lower=0))
 
-        dyn_rev, flat_rev, dyn_prof, flat_prof, n_obs = 0.0, 0.0, 0.0, 0.0, 0
-        for _, g2 in bt.iterrows():
-            new = float(g2["_new"] or 0)
+        dyn_rev = flat_rev = 0.0
+        seats_n = 0
+        for _, g in bt.iterrows():
+            new = float(g["_new"] or 0)
             if new <= 0:
                 continue
-            rt, cb = str(g2["Route"]), str(g2["Cabin Class"])
+            rt, cb = str(g["Route"]), str(g["Cabin Class"])
             dl = pace_delta_for(pace_curve, rt, cb,
-                                int(g2["Days to Departure"]),
-                                float(g2["Load Factor"]))
-            v, _ = calc_fare(rt, cb, int(g2["Days to Departure"]),
-                             float(g2["Load Factor"]), 0,
-                             str(g2.get("Holiday / Festival", "No")) == "Yes",
-                             deph(g2.get("Departure Time", "10:00")),
-                             pace_delta=dl)
+                                int(g["Days to Departure"]), float(g["Load Factor"]))
+            v, _ = calc_fare(rt, cb, int(g["Days to Departure"]),
+                             float(g["Load Factor"]), 0,
+                             str(g.get("Holiday / Festival", "No")) == "Yes",
+                             deph(g.get("Departure Time", "10:00")), pace_delta=dl)
             flat = BASE_FARES.get(rt, 5000) * CABIN_MULT.get(cb, 1.0)
-            cst  = seat_cost(rt, cb)
             dyn_rev  += v * new
             flat_rev += flat * new
-            dyn_prof  += (v - cst) * new
-            flat_prof += (flat - cst) * new
-            n_obs += 1
+            seats_n  += int(new)
 
-        if n_obs == 0:
+        if seats_n == 0:
             st.info("No booking movements found in the history to price against.")
         else:
             uplift = dyn_rev - flat_rev
             upct = (uplift / flat_rev * 100) if flat_rev else 0
-            b1, b2, b3, b4 = st.columns(4)
-            b1.metric("Bookings priced", f"{int(bt['_new'].sum()):,} seats")
-            b2.metric("Revenue — flat base pricing", inr(flat_rev))
-            b3.metric("Revenue — dynamic rules", inr(dyn_rev))
-            b4.metric("Uplift from dynamic pricing", inr(uplift),
-                      delta=f"{upct:+.1f}%")
-            st.caption("Every booking observed in the historical data is re-priced "
-                       "two ways: at the flat cabin base fare, and at what the "
-                       "rules engine would have charged that day given the "
-                       "actual load factor and days-out. The gap is the value of "
-                       "pricing dynamically. Competitor corrections are excluded "
-                       "here so the comparison isolates the demand rules.")
+            word = "more" if uplift >= 0 else "less"
+            st.markdown(
+                f'<div class="insight">Across <b>{seats_n:,} seats</b> actually '
+                f'sold in the historical data, charging one flat fare all the way '
+                f'through would have brought in <b>{inr(flat_rev)}</b>. Pricing '
+                f'each of those seats by our rules — reacting to how full the '
+                f'flight was and how close departure had come — would have '
+                f'brought in <b>{inr(dyn_rev)}</b>. That is '
+                f'<span class="big">{inr(abs(uplift))} {word}</span>, '
+                f'or {abs(upct):.1f}%.</div>', unsafe_allow_html=True)
+
+            b1, b2, b3 = st.columns(3)
+            b1.metric("Seats priced", f"{seats_n:,}")
+            b2.metric("One flat fare throughout", inr(flat_rev))
+            b3.metric("Priced by our rules", inr(dyn_rev), delta=f"{upct:+.1f}%")
+            st.caption("Every booking in the history is re-priced twice: once at "
+                       "the flat cabin fare, once at what the rules would have "
+                       "charged that day. Competitor reactions are excluded so "
+                       "the comparison isolates the demand rules alone.")
 
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # ══════════ 6 · RECOMMENDATION HISTORY — FEEDBACK LOOP DATA BANK ══════════
-    st.markdown('<div class="sec-hd">Recommendation history — feedback loop '
-                'data bank</div>', unsafe_allow_html=True)
-
-    if ai_log_df.empty:
-        st.info("No recommendations logged yet. Each AI call is recorded with its "
-                "rationale, the competitor snapshot it saw, who decided, and what "
-                "bookings did next — and this history feeds future prompts.")
-    else:
-        hist_df = ai_log_df.copy()
-
-        h1, h2, h3 = st.columns([1, 1, 2])
-        with h1:
-            scope = st.radio("Show", ["This route", "All routes"],
-                             index=0, horizontal=True, key="hist_scope")
-        with h2:
-            outcome = st.selectbox("Outcome", ["All", "Accepted", "Overridden",
-                                               "Pending"], key="hist_outcome")
-
-        if scope == "This route" and "Route" in hist_df.columns:
-            hist_df = hist_df[hist_df["Route"] == sel_route]
-        if outcome != "All" and "Manager Decision" in hist_df.columns:
-            hist_df = hist_df[hist_df["Manager Decision"] == outcome]
-
-        keys = [c for c in ["Flight No.", "Cabin Class", "Departure Date"]
-                if c in hist_df.columns]
-        if keys and not hist_df.empty and "Log Date" in hist_df.columns:
-            hist_df["_ld"] = pd.to_datetime(hist_df["Log Date"], errors="coerce")
-            hist_df["_day"] = hist_df["_ld"].dt.normalize()
-            hist_df = (hist_df.sort_values("_ld")
-                       .drop_duplicates(subset=keys + ["_day"], keep="last"))
-
-        if hist_df.empty:
-            st.info("No entries match this filter.")
-        else:
-            # Outcome tracking: bookings in the ~24h after each decision
-            def bookings_after(row):
-                try:
-                    fno = str(row.get("Flight No.", ""))
-                    cb  = str(row.get("Cabin Class", ""))
-                    dk  = dkey(row.get("Departure Date", ""))
-                    d0  = pd.to_datetime(row.get("Log Date"),
-                                         errors="coerce").normalize()
-                    s0  = pd.to_numeric(row.get("Seats At Decision"),
-                                        errors="coerce")
-                    if pd.isna(d0) or pd.isna(s0):
-                        return None
-                    obs = indigo_df[
-                        (indigo_df["Flight No."].astype(str) == fno) &
-                        (indigo_df["Cabin Class"].astype(str) == cb) &
-                        (indigo_df["Departure Date"].map(dkey) == dk) &
-                        (indigo_df[dcol] > d0) &
-                        (indigo_df[dcol] <= d0 + timedelta(days=1))]
-                    if obs.empty:
-                        return None
-                    s1 = pd.to_numeric(obs.sort_values(dcol).iloc[-1]["Seats Sold"],
-                                       errors="coerce")
-                    if pd.isna(s1):
-                        return None
-                    return int(s1 - s0)
-                except Exception:
-                    return None
-
-            hist_df["Bookings +24h"] = hist_df.apply(bookings_after, axis=1)
-
-            with h3:
-                mgr = hist_df.get("Manager Decision", pd.Series(dtype=str))
-                n_acc = int((mgr == "Accepted").sum())
-                n_ovr = int((mgr == "Overridden").sum())
-                n_pen = int((mgr == "Pending").sum())
-                total = max(len(hist_df), 1)
-                st.markdown(
-                    f'<div style="padding-top:1.1rem;font-size:0.72rem;color:#3a5080;">'
-                    f'<b>{len(hist_df)}</b> recommendations &nbsp;·&nbsp; '
-                    f'<span style="color:{GREEN}">{n_acc} accepted</span> &nbsp;·&nbsp; '
-                    f'<span style="color:{AMBER}">{n_ovr} overridden</span> &nbsp;·&nbsp; '
-                    f'<span style="color:{GREY}">{n_pen} pending</span> &nbsp;·&nbsp; '
-                    f'AI acceptance rate <b>{n_acc/total*100:.0f}%</b>'
-                    f'</div>', unsafe_allow_html=True)
-
-            show = [c for c in ["Log Date", "Analyst", "Route", "Flight No.",
-                                "Cabin Class", "Departure Date", "Load Factor",
-                                "Arithmetic Fare", "AI Suggested Fare", "Engine",
-                                "Manager Decision", "Final Fare Used",
-                                "Bookings +24h", "Strategic Direction",
-                                "Competitor Snapshot", "AI Rationale"]
-                    if c in hist_df.columns]
-            st.dataframe(hist_df.sort_values("_ld", ascending=False)[show],
-                         use_container_width=True, hide_index=True,
-                         column_config={
-                             "AI Rationale": st.column_config.TextColumn(
-                                 "AI rationale", width="large"),
-                             "Competitor Snapshot": st.column_config.TextColumn(
-                                 "Competitors seen at decision", width="medium"),
-                         })
-            st.caption("Full audit trail: what the AI saw, what it said, who "
-                       "decided, and whether bookings actually moved in the next "
-                       "24 hours. Accepted and overridden entries are injected "
-                       "into future prompts — the feedback loop your mentor "
-                       "asked for, with outcomes rather than opinions.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ══════════ 7 · PROFITABILITY FROM APPROVED FARES ══════════
-    st.markdown('<div class="sec-hd">Profitability from manager-approved fares</div>',
+    st.markdown('<div class="sec-hd">Profit on fares a manager has approved</div>',
                 unsafe_allow_html=True)
 
     if feedback_df.empty or "Manager Decision" not in feedback_df.columns:
-        st.info("No manager decisions recorded yet. Accept or override a "
-                "recommendation above and the profit impact will appear here.")
-    else:
-        acc = feedback_df[feedback_df["Manager Decision"]
-                          .isin(["Accepted", "Overridden"])].copy()
-        if acc.empty:
-            st.info("No accepted recommendations yet.")
-        else:
-            acc["Final Fare Used"] = pd.to_numeric(acc["Final Fare Used"],
-                                                   errors="coerce")
-            acc["_cost"] = acc.apply(
-                lambda r: seat_cost(str(r.get("Route", "")),
-                                    str(r.get("Cabin Class", "Economy"))), axis=1)
-            acc["Profit Per Seat"] = acc["Final Fare Used"] - acc["_cost"]
-            acc["LF"] = pd.to_numeric(acc["Load Factor"], errors="coerce") / 100
-            acc["Seats"] = acc["Route"].map(TOTAL_SEATS_MAP).fillna(180)
-            acc["Flight Profit"] = acc["Profit Per Seat"] * acc["Seats"] * acc["LF"]
-            acc["_base"] = acc.apply(
-                lambda r: BASE_FARES.get(str(r.get("Route", "")), 5000)
-                          * CABIN_MULT.get(str(r.get("Cabin Class", "Economy")), 1.0),
-                axis=1)
-            acc["Revenue Uplift"] = ((acc["Final Fare Used"] - acc["_base"])
-                                     * acc["Seats"] * acc["LF"])
+        st.info("No decisions recorded yet. Approve a fare in the Flight "
+                "dashboard and the profit impact will appear here.")
+        return
 
-            p1, p2, p3, p4 = st.columns(4)
-            p1.metric("Decisions recorded", len(acc))
-            p2.metric("Revenue uplift vs cabin base", inr(acc["Revenue Uplift"].sum()))
-            p3.metric("Avg profit per seat", inr(acc["Profit Per Seat"].mean()))
-            p4.metric("Est. total flight profit", inr(acc["Flight Profit"].sum()))
+    acc = feedback_df[feedback_df["Manager Decision"]
+                      .isin(["Accepted", "Overridden"])].copy()
+    if acc.empty:
+        st.info("No approved fares yet.")
+        return
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            rp = (acc.groupby("Route")["Flight Profit"].sum()
-                  .reset_index().sort_values("Flight Profit"))
-            fig5 = go.Figure(go.Bar(
-                x=rp["Flight Profit"], y=rp["Route"], orientation="h",
-                marker_color=[GREEN if x > 0 else RED for x in rp["Flight Profit"]],
-                text=[inr(x) for x in rp["Flight Profit"]],
-                textposition="outside", textfont=dict(size=11)))
-            fig5.update_xaxes(title_text="Estimated flight profit (₹)")
-            style_chart(fig5, height=210, legend=False)
-            fig5.update_layout(margin=dict(l=10, r=90, t=10, b=10))
-            st.plotly_chart(fig5, use_container_width=True)
-            st.caption("Costs are cabin-aware: a Business seat is costed at "
-                       f"{CABIN_COST_MULT['Business']:.1f}× the economy seat cost "
-                       "because it occupies that much more aircraft floor space.")
+    acc["Final Fare Used"] = pd.to_numeric(acc["Final Fare Used"], errors="coerce")
+    acc["_cost"] = acc.apply(lambda r: seat_cost(str(r.get("Route", "")),
+                                                 str(r.get("Cabin Class", "Economy"))),
+                             axis=1)
+    acc["Profit per seat"] = acc["Final Fare Used"] - acc["_cost"]
+    acc["_lf"] = pd.to_numeric(acc["Load Factor"], errors="coerce") / 100
+    acc["_seats"] = acc["Route"].map(TOTAL_SEATS_MAP).fillna(180)
+    acc["Profit for the flight"] = acc["Profit per seat"] * acc["_seats"] * acc["_lf"]
+    acc["_base"] = acc.apply(
+        lambda r: BASE_FARES.get(str(r.get("Route", "")), 5000)
+                  * CABIN_MULT.get(str(r.get("Cabin Class", "Economy")), 1.0), axis=1)
+    acc["Extra vs flat fare"] = ((acc["Final Fare Used"] - acc["_base"])
+                                 * acc["_seats"] * acc["_lf"])
 
-            cols = [c for c in ["Timestamp", "Analyst", "Route", "Flight No.",
-                                "Departure Date", "Cabin Class", "Load Factor",
-                                "Arithmetic Fare", "AI Suggested Fare", "Engine",
-                                "Final Fare Used", "Manager Decision",
-                                "Profit Per Seat", "Flight Profit"]
-                    if c in acc.columns]
-            st.dataframe(acc[cols].sort_values("Timestamp", ascending=False),
-                         use_container_width=True, hide_index=True)
+    st.markdown(
+        f'<div class="insight">Managers have approved <b>{len(acc)} fares</b>. '
+        f'Compared with charging the standard cabin fare on those same flights, '
+        f'they are worth <span class="big">'
+        f'{inr(acc["Extra vs flat fare"].sum())}</span> in extra revenue, at an '
+        f'average profit of <b>{inr(acc["Profit per seat"].mean())} per seat</b>.'
+        f'</div>', unsafe_allow_html=True)
+
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Fares approved", len(acc))
+    p2.metric("Extra vs flat fare", inr(acc["Extra vs flat fare"].sum()))
+    p3.metric("Average profit per seat", inr(acc["Profit per seat"].mean()))
+    p4.metric("Total flight profit", inr(acc["Profit for the flight"].sum()))
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    rp = (acc.groupby("Route")["Profit for the flight"].sum()
+          .reset_index().sort_values("Profit for the flight"))
+    fig = go.Figure(go.Bar(
+        x=rp["Profit for the flight"], y=rp["Route"], orientation="h",
+        marker_color=[GREEN if x > 0 else RED for x in rp["Profit for the flight"]],
+        text=[inr(x) for x in rp["Profit for the flight"]],
+        textposition="outside", textfont=dict(size=11)))
+    fig.update_xaxes(title_text="Estimated profit for the flight (₹)")
+    style_chart(fig, height=210, legend=False)
+    fig.update_layout(margin=dict(l=10, r=95, t=10, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"A Business seat is costed at {CABIN_COST_MULT['Business']:.1f} "
+               "times an economy seat, because it takes up that much more of "
+               "the aircraft.")
+
+    for c in ("Timestamp", "Departure Date"):
+        if c in acc.columns:
+            acc[c] = acc[c].map(lambda v: dfmt(v))
+    cols = [c for c in ["Timestamp", "Analyst", "Route", "Flight No.",
+                        "Departure Date", "Cabin Class", "Load Factor",
+                        "Arithmetic Fare", "AI Suggested Fare", "Engine",
+                        "Final Fare Used", "Manager Decision",
+                        "Profit per seat", "Profit for the flight"]
+            if c in acc.columns]
+    st.dataframe(acc[cols], use_container_width=True, hide_index=True)
 
     st.markdown("""<div style="margin-top:1.6rem;padding:0.6rem 0;
       border-top:1px solid #dde3f0;text-align:center;font-size:0.6rem;
